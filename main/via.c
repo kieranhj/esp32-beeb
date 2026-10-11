@@ -2,7 +2,11 @@
 
 #include "via.h"
 
-static void via_check_irq(struct via *via)
+#ifndef VIA_API
+#define VIA_API
+#endif
+
+static inline void via_check_irq(struct via *via)
 {
     if (via->ifr & via->ier & 0x7f) {
         via->ifr |= 0x80;
@@ -13,30 +17,30 @@ static void via_check_irq(struct via *via)
     }
 }
 
-static void via_raise(struct via *via, uint8_t bits)
+static inline void via_raise(struct via *via, uint8_t bits)
 {
     via->ifr |= bits;
     via_check_irq(via);
 }
 
-static void via_clear(struct via *via, uint8_t bits)
+static inline void via_clear(struct via *via, uint8_t bits)
 {
     via->ifr &= ~bits;
     via_check_irq(via);
 }
 
-void via_update_bus_a(struct via *via)
+VIA_API void via_update_bus_a(struct via *via)
 {
     uint8_t v = (via->ora & via->ddra) | ~via->ddra;
     via->bus_a = v & via->peripheral_a;
 }
 
-uint8_t via_port_a_out(const struct via *via)
+VIA_API uint8_t via_port_a_out(const struct via *via)
 {
     return (via->ora & via->ddra) | ~via->ddra;
 }
 
-uint8_t via_port_b(const struct via *via)
+VIA_API uint8_t via_port_b(const struct via *via)
 {
     return (via->orb & via->ddrb) | (via->peripheral_b & ~via->ddrb);
 }
@@ -49,7 +53,7 @@ static void via_port_changed(struct via *via, int which)
     via_update_bus_a(via);
 }
 
-void via_reset(struct via *via)
+VIA_API void via_reset(struct via *via)
 {
     // Matches beebjit (and a real BBC): OR/DDR zero, inputs read high.
     via->ora = via->orb = via->ddra = via->ddrb = 0;
@@ -66,7 +70,7 @@ void via_reset(struct via *via)
     via_port_changed(via, 1);
 }
 
-void via_tick(struct via *via)
+VIA_API void via_tick(struct via *via)
 {
     // T1
     if (via->t1_reload) {
@@ -96,7 +100,7 @@ void via_tick(struct via *via)
     }
 }
 
-uint8_t via_read(struct via *via, uint8_t reg)
+VIA_API uint8_t via_read(struct via *via, uint8_t reg)
 {
     uint8_t v;
     switch (reg & 0xf) {
@@ -134,7 +138,7 @@ uint8_t via_read(struct via *via, uint8_t reg)
     return 0xff;
 }
 
-void via_write(struct via *via, uint8_t reg, uint8_t val)
+VIA_API void via_write(struct via *via, uint8_t reg, uint8_t val)
 {
     switch (reg & 0xf) {
     case VIA_ORB:
@@ -217,7 +221,7 @@ void via_write(struct via *via, uint8_t reg, uint8_t val)
     }
 }
 
-void via_set_ca1(struct via *via, int level)
+VIA_API void via_set_ca1(struct via *via, int level)
 {
     if (level == via->ca1) {
         return;
@@ -229,7 +233,7 @@ void via_set_ca1(struct via *via, int level)
     }
 }
 
-void via_set_ca2(struct via *via, int level)
+VIA_API void via_set_ca2(struct via *via, int level)
 {
     if (level == via->ca2) {
         return;
@@ -243,7 +247,7 @@ void via_set_ca2(struct via *via, int level)
     }
 }
 
-void via_set_cb1(struct via *via, int level)
+VIA_API void via_set_cb1(struct via *via, int level)
 {
     if (level == via->cb1) {
         return;
@@ -255,7 +259,7 @@ void via_set_cb1(struct via *via, int level)
     }
 }
 
-void via_set_cb2(struct via *via, int level)
+VIA_API void via_set_cb2(struct via *via, int level)
 {
     if (level == via->cb2) {
         return;

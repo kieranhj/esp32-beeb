@@ -22,6 +22,11 @@
 
 #include <stdint.h>
 
+// Linkage/placement for the functions; the machine makes them static IRAM.
+#ifndef VIA_API
+#define VIA_API
+#endif
+
 enum {
     VIA_ORB = 0, VIA_ORA, VIA_DDRB, VIA_DDRA, VIA_T1CL, VIA_T1CH, VIA_T1LL,
     VIA_T1LH, VIA_T2CL, VIA_T2CH, VIA_SR, VIA_ACR, VIA_PCR, VIA_IFR, VIA_IER,
@@ -49,20 +54,20 @@ struct via {
     void *ctx;
 };
 
-void via_reset(struct via *via);
-void via_tick(struct via *via);  // one 1 MHz tick
-uint8_t via_read(struct via *via, uint8_t reg);
-void via_write(struct via *via, uint8_t reg, uint8_t val);
-void via_set_ca1(struct via *via, int level);
-void via_set_ca2(struct via *via, int level);
-void via_set_cb1(struct via *via, int level);
-void via_set_cb2(struct via *via, int level);
+VIA_API void via_reset(struct via *via);
+VIA_API void via_tick(struct via *via);  // one 1 MHz tick
+VIA_API uint8_t via_read(struct via *via, uint8_t reg);
+VIA_API void via_write(struct via *via, uint8_t reg, uint8_t val);
+VIA_API void via_set_ca1(struct via *via, int level);
+VIA_API void via_set_ca2(struct via *via, int level);
+VIA_API void via_set_cb1(struct via *via, int level);
+VIA_API void via_set_cb2(struct via *via, int level);
 // Resolved port B pins: outputs where DDRB says so, peripheral levels else.
-uint8_t via_port_b(const struct via *via);
+VIA_API uint8_t via_port_b(const struct via *via);
 // Resolved port A pins before the peripheral mask.
-uint8_t via_port_a_out(const struct via *via);
+VIA_API uint8_t via_port_a_out(const struct via *via);
 // Recomputes bus_a from ORA/DDRA and peripheral_a; the machine calls this
 // after changing peripheral_a.
-void via_update_bus_a(struct via *via);
+VIA_API void via_update_bus_a(struct via *via);
 
 #endif

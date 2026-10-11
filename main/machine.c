@@ -1,5 +1,14 @@
 // esp32-beeb: BBC Master 128 machine. See machine.h.
 //
+// Code shape. The core only counts cycles; the peripherals catch up in
+// machine_sync(), called once per instruction, before RAM writes and before
+// hardware accesses. One call per cycle was measured at 60+ host clocks on
+// the ESP32-S3 because the windowed ABI leaves few registers live across a
+// call; one call per instruction amortises that. The out-of-line paths take
+// the machine pointer and the cycle count, never the core's state pointer,
+// and hand back the IRQ level of every cycle they stepped so the core's
+// interrupt poll stays cycle exact.
+//
 // Timing model. The core calls machine_tick() once per 2 MHz cycle. The CRTC
 // steps every cycle; the VIAs and ADC step on odd cycle counts (beebjit's
 // VIA timers expire one tick after the 1 MHz boundary). A read or write of a
@@ -13,12 +22,14 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "machine.h"
-
 #ifndef MACHINE_CODE_ATTR
 #define MACHINE_CODE_ATTR
 #endif
+#define MACHINE_NOINLINE MACHINE_CODE_ATTR __attribute__((noinline))
+#define VIA_API static MACHINE_CODE_ATTR
+#define CRTC_API MACHINE_CODE_ATTR
 
+#include "machine.h"
 #include "via.c"
 
 #define INLINE static inline __attribute__((always_inline))
@@ -30,6 +41,10 @@ static void machine_vsync(struct machine *m, int level);
 #define CRTC_VSYNC(c, level) machine_vsync(crtc_owner(c), level)
 static struct machine *crtc_owner(struct crtc *c);
 #include "crtc.c"
+
+// Profiling switch for the per-cycle step (bit 0: skip the CRTC, bit 1:
+// skip the VIAs). Zero in normal use; main.c sets it while measuring.
+uint8_t machine_profile_skip;
 
 // ---- paging -----------------------------------------------------------------
 
@@ -74,7 +89,7 @@ static void remap_sideways(struct machine *m)
     uint8_t *swram = 0;
     const uint8_t *rom = m->rom[bank];
     if (bank >= 4 && bank < 4 + MACHINE_SWRAM_SLOTS) {
-        swram = m->swram[bank - 4];
+        swram = m->swram[bank - 4];  // NULL if the platform gave none
     }
     for (int set = 0; set < 2; set++) {
         if (swram) {
@@ -221,9 +236,9 @@ static void sysvia_port_cb(struct via *via, void *ctx, int which)
 
 // ---- per-cycle hook ---------------------------------------------------------
 
-INLINE void machine_update_irq(struct machine *m, struct cpu6502 *cpu)
+INLINE uint8_t machine_irq_level(const struct machine *m)
 {
-    cpu->irq_line = m->sysvia.irq | m->usrvia.irq;
+    return m->sysvia.irq | m->usrvia.irq;
 }
 
 // ---- display memory ---------------------------------------------------------
@@ -273,10 +288,14 @@ static uint8_t machine_display_fetch(struct machine *m, uint16_t ma, uint8_t ra,
     return m->ram[addr];
 }
 
-INLINE void machine_tick(struct cpu6502 *cpu)
+// One 2 MHz cycle of the machine, `cyc` being the count after this cycle.
+// Returns the IRQ level for the core.
+INLINE uint8_t machine_tick(struct machine *m, uint32_t cyc)
 {
-    struct machine *m = cpu->m;
-    crtc_tick(&m->crtc, cpu->cyc - 1);
+    uint8_t skip = machine_profile_skip;
+    if (!(skip & 1)) {
+        crtc_tick(&m->crtc, cyc - 1);
+    }
     if (m->adc_busy && --m->adc_countdown == 0) {
         m->adc_busy = 0;
         m->adc_ready = 1;
@@ -285,13 +304,11 @@ INLINE void machine_tick(struct cpu6502 *cpu)
     // The VIAs step on odd cycle counts: beebjit's VIA timers expire on the
     // tick after the 1 MHz boundary, and a 1 MHz access lands on an odd
     // count with that tick already applied (see the stretch below).
-    if (!(cpu->cyc & 1)) {
-        machine_update_irq(m, cpu);
-        return;
+    if ((cyc & 1) && !(skip & 2)) {
+        via_tick(&m->sysvia);
+        via_tick(&m->usrvia);
     }
-    via_tick(&m->sysvia);
-    via_tick(&m->usrvia);
-    machine_update_irq(m, cpu);
+    return machine_irq_level(m);
 }
 
 // ---- small peripherals ---------------------------------------------------------
@@ -354,7 +371,7 @@ INLINE int is_1mhz(uint16_t addr)
 }
 
 
-static uint8_t sheila_read(struct machine *m, struct cpu6502 *cpu, uint16_t addr)
+static MACHINE_NOINLINE uint8_t sheila_read(struct machine *m, uint16_t addr)
 {
     uint8_t ret = 0xfe;
     switch (addr & 0xfffc) {
@@ -396,12 +413,10 @@ static uint8_t sheila_read(struct machine *m, struct cpu6502 *cpu, uint16_t addr
     case 0xfe40: case 0xfe44: case 0xfe48: case 0xfe4c:
     case 0xfe50: case 0xfe54: case 0xfe58: case 0xfe5c:
         ret = via_read(&m->sysvia, addr & 0xf);
-        machine_update_irq(m, cpu);
         break;
     case 0xfe60: case 0xfe64: case 0xfe68: case 0xfe6c:
     case 0xfe70: case 0xfe74: case 0xfe78: case 0xfe7c:
         ret = via_read(&m->usrvia, addr & 0xf);
-        machine_update_irq(m, cpu);
         break;
     default:
         break;
@@ -409,7 +424,7 @@ static uint8_t sheila_read(struct machine *m, struct cpu6502 *cpu, uint16_t addr
     return ret;
 }
 
-static void sheila_write(struct machine *m, struct cpu6502 *cpu, uint16_t addr, uint8_t val)
+static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint8_t val)
 {
     switch (addr & 0xfffc) {
     case 0xfe00: case 0xfe04:
@@ -451,12 +466,10 @@ static void sheila_write(struct machine *m, struct cpu6502 *cpu, uint16_t addr, 
     case 0xfe40: case 0xfe44: case 0xfe48: case 0xfe4c:
     case 0xfe50: case 0xfe54: case 0xfe58: case 0xfe5c:
         via_write(&m->sysvia, addr & 0xf, val);
-        machine_update_irq(m, cpu);
         break;
     case 0xfe60: case 0xfe64: case 0xfe68: case 0xfe6c:
     case 0xfe70: case 0xfe74: case 0xfe78: case 0xfe7c:
         via_write(&m->usrvia, addr & 0xf, val);
-        machine_update_irq(m, cpu);
         break;
     default:
         break;
@@ -471,78 +484,130 @@ INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)
     return 0xff;
 }
 
-static uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr);
-static void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val);
+// Catch-up: steps the peripherals from m->synced to `cyc`, one 2 MHz cycle
+// at a time, and returns the IRQ level after each cycle as a bit mask
+// (newest in bit 0) with the cycle count in bits 16 and up. The core calls
+// this once per instruction and before RAM writes, so n is small.
+static MACHINE_NOINLINE uint32_t machine_sync(struct machine *m, uint32_t cyc)
+{
+    uint32_t mask = 0;
+    uint32_t n = cyc - m->synced;
+    if (machine_profile_skip & 8) {
+        m->synced = cyc;  // measurement: the call alone
+        return n << 16;
+    }
+    while (m->synced != cyc) {
+        m->synced++;
+        mask = (mask << 1) | machine_tick(m, m->synced);
+    }
+    return mask | (n << 16);
+}
+
+// Hardware access slow paths, out of line, with no access to the core's
+// state. They catch up first, then spend the stretched cycles themselves
+// and return like machine_sync() with the data byte in bits 24-31.
+#define IO_TICK() do { cyc++; n++; k++; mask = (mask << 1) | machine_tick(m, cyc); } while (0)
+#define IO_RESULT(v) ((mask & 0xfff) | (k << 12) | (n << 16) | ((uint32_t)(v) << 24))
+
+static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t addr, uint32_t cyc)
+{
+    uint32_t r = machine_sync(m, cyc);
+    uint32_t mask = r & 0xffff, n = r >> 16, k = 0;
+    uint8_t v;
+    if ((addr & 0xff00) != 0xfe00) {
+        IO_TICK();
+        if (!(cyc & 1)) {
+            IO_TICK();
+        }
+        v = fred_jim_read(m, addr);
+        IO_TICK();
+    } else if (is_1mhz(addr)) {
+        IO_TICK();
+        if (!(cyc & 1)) {  // c was odd: two idle cycles
+            IO_TICK();
+        }
+        v = sheila_read(m, addr);  // at the odd count, mid 1 MHz cycle
+        IO_TICK();
+    } else {
+        IO_TICK();
+        v = sheila_read(m, addr);
+    }
+    m->synced = cyc;
+    return IO_RESULT(v);
+}
+
+static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t addr, uint32_t cyc, uint8_t val)
+{
+    uint32_t r = machine_sync(m, cyc);
+    uint32_t mask = r & 0xffff, n = r >> 16, k = 0;
+    if ((addr & 0xff00) != 0xfe00) {
+        IO_TICK();
+        if (!(cyc & 1)) {
+            IO_TICK();
+        }
+        IO_TICK();  // FRED, JIM: 1 MHz, nothing listening
+    } else if (is_1mhz(addr)) {
+        IO_TICK();
+        if (!(cyc & 1)) {
+            IO_TICK();
+        }
+        sheila_write(m, addr, val);
+        IO_TICK();
+    } else if (addr >= 0xfe20 && addr < 0xfe24) {
+        sheila_write(m, addr, val);  // video ULA: access then tick
+        IO_TICK();
+    } else {
+        IO_TICK();
+        sheila_write(m, addr, val);
+    }
+    m->synced = cyc;
+    return IO_RESULT(0);
+}
+
+#undef IO_TICK
+#undef IO_RESULT
 
 // ---- the core, specialised for this machine -------------------------------
 
-#define CPU6502_TICK(cpu) machine_tick(cpu)
+struct cpu6502;
+static inline __attribute__((always_inline)) void machine_cpu_sync(struct cpu6502 *cpu);
+static inline __attribute__((always_inline)) uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr);
+static inline __attribute__((always_inline)) void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val);
+
+#define CPU6502_SYNC(cpu) machine_cpu_sync(cpu)
 #define CPU6502_IO_RD(cpu, addr) machine_io_rd(cpu, addr)
 #define CPU6502_IO_WR(cpu, addr, v) machine_io_wr(cpu, addr, v)
 #define CPU6502_CODE_ATTR MACHINE_CODE_ATTR
 #include "cpu6502.c"
 
-#define tick1(cpu) cycle(cpu)
-
-static uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr)
+INLINE void machine_cpu_sync(struct cpu6502 *cpu)
 {
-    struct machine *m = cpu->m;
-    uint8_t v;
-    if ((addr & 0xff00) != 0xfe00) {
-        tick1(cpu);
-        if (!(cpu->cyc & 1)) {
-            tick1(cpu);
-        }
-        v = fred_jim_read(m, addr);
-        tick1(cpu);
-        return v;
+    if (machine_profile_skip & 4) {
+        return;  // measurement: core alone
     }
-    if (is_1mhz(addr)) {
-        tick1(cpu);
-        if (cpu->cyc & 1) {  // c was even: one idle cycle, now mid 1 MHz
-            v = sheila_read(m, cpu, addr);
-            tick1(cpu);
-        } else {             // c was odd: two idle cycles
-            tick1(cpu);
-            v = sheila_read(m, cpu, addr);
-            tick1(cpu);
-        }
-        return v;
-    }
-    tick1(cpu);
-    return sheila_read(m, cpu, addr);
+    uint32_t r = machine_sync((struct machine *)cpu->m, cpu->cyc);
+    cpu->irq_hist = (cpu->irq_hist << (r >> 16)) | (r & 0xffff);
 }
 
-static void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val)
+// Slow path results: bits 0-11 history, 12-15 stretch cycles to add to the
+// core's count, 16-23 history length, 24-31 data.
+INLINE void machine_io_apply(struct cpu6502 *cpu, uint32_t r)
 {
-    struct machine *m = cpu->m;
-    if ((addr & 0xff00) != 0xfe00) {
-        tick1(cpu);
-        if (!(cpu->cyc & 1)) {
-            tick1(cpu);
-        }
-        tick1(cpu);  // FRED, JIM: 1 MHz, nothing listening
-        return;
-    }
-    if (is_1mhz(addr)) {
-        tick1(cpu);
-        if (cpu->cyc & 1) {
-            sheila_write(m, cpu, addr, val);
-            tick1(cpu);
-        } else {
-            tick1(cpu);
-            sheila_write(m, cpu, addr, val);
-            tick1(cpu);
-        }
-        return;
-    }
-    if (addr >= 0xfe20 && addr < 0xfe24) {
-        sheila_write(m, cpu, addr, val);  // video ULA: access then tick
-        tick1(cpu);
-        return;
-    }
-    tick1(cpu);
-    sheila_write(m, cpu, addr, val);
+    cpu->cyc += (r >> 12) & 0xf;
+    cpu->irq_hist = (cpu->irq_hist << ((r >> 16) & 0xff)) | (r & 0xfff);
+}
+
+INLINE uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr)
+{
+    uint32_t r = machine_io_rd_slow((struct machine *)cpu->m, addr, cpu->cyc);
+    machine_io_apply(cpu, r);
+    return (uint8_t)(r >> 24);
+}
+
+INLINE void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val)
+{
+    uint32_t r = machine_io_wr_slow((struct machine *)cpu->m, addr, cpu->cyc, val);
+    machine_io_apply(cpu, r);
 }
 
 // ---- lifecycle --------------------------------------------------------------
@@ -579,7 +644,11 @@ void machine_reset(struct machine *m)
     memset(m->lynne, 0, sizeof m->lynne);
     memset(m->andy, 0, sizeof m->andy);
     memset(m->hazel, 0, sizeof m->hazel);
-    memset(m->swram, 0, sizeof m->swram);
+    for (int i = 0; i < MACHINE_SWRAM_SLOTS; i++) {
+        if (m->swram[i]) {
+            memset(m->swram[i], 0, 0x4000);
+        }
+    }
     m->romsel = 0;
     m->acccon = 0;
     m->ic32 = 0;
@@ -592,6 +661,7 @@ void machine_reset(struct machine *m)
     crtc_reset(&m->crtc);
     m->cpu.cycles = 0;
     m->cpu.cyc = 0;
+    m->synced = 0;
     cpu6502_reset(&m->cpu);
 }
 

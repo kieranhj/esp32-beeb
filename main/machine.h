@@ -10,7 +10,8 @@
 //   lynne[20K]    0x3000-0x7FFF shadow RAM, selected by ACCCON X/E rules
 //   andy[4K]      0x8000-0x8FFF when ROMSEL bit 7
 //   hazel[8K]     0xC000-0xDFFF when ACCCON bit 3
-//   swram[4][16K] sideways RAM in slots 4 to 7
+//   swram[4]      16 KB sideways RAM for slots 4 to 7; the platform supplies
+//                 the buffers (PSRAM on the board for now, see decisions)
 //   rom[16]       16 KB images for the sideways slots (NULL = empty, reads 0)
 //   mos           16 KB MOS 3.20
 // Paging is pointer-table updates only (machine_remap_*), never copies.
@@ -27,12 +28,13 @@
 
 struct machine {
     struct cpu6502 cpu;
+    uint32_t synced;   // cycle count the peripherals have been stepped to
 
     uint8_t ram[0x8000];
     uint8_t lynne[0x5000];
     uint8_t andy[0x1000];
     uint8_t hazel[0x2000];
-    uint8_t swram[MACHINE_SWRAM_SLOTS][0x4000];
+    uint8_t *swram[MACHINE_SWRAM_SLOTS];   // 16 KB each, platform allocated
     const uint8_t *rom[16];
     const uint8_t *mos;
     uint8_t bitbucket[256];     // write target for ROM pages
@@ -71,6 +73,7 @@ struct machine {
     uint8_t fdc_ctrl;
 };
 
+extern uint8_t machine_profile_skip;   // measurement only, see machine.c
 void machine_init(struct machine *m);  // zero state, build tables, VIAs
 void machine_reset(struct machine *m); // power-on reset of CPU and VIAs
 // Runs until the machine's total cycle count reaches `until`.

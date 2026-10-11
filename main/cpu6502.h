@@ -30,13 +30,13 @@ struct cpu6502 {
     // Flags kept unpacked. n holds bit 7 only (0 or 0x80), the rest are 0/1.
     uint8_t n, z, c, v, i, d;
     uint8_t cmos;  // 1: 65C12 (Master), 0: NMOS 6502 (Model B)
-    // Interrupt lines. irq_line is level, driven by the machine from its
-    // per-cycle hook. nmi_pending is set by the machine on the NMI edge.
-    // An IRQ is taken after an instruction if the line was asserted two
-    // cycles before its end (the chip polls before the penultimate cycle)
-    // and I was clear at the instruction start (RTI: as pulled). irq_hist
-    // is the per-cycle history of irq_line that makes that cheap; i_poll
-    // the I flag value the poll uses; no_poll marks the one-cycle NOPs.
+    // Interrupts. irq_hist holds one bit per cycle, newest in bit 0, of the
+    // IRQ line level after that cycle; the machine appends to it when it
+    // catches up (CPU6502_SYNC). nmi_pending is set by the machine on the
+    // NMI edge. An IRQ is taken after an instruction if the line was
+    // asserted two cycles before its end (the chip polls before the
+    // penultimate cycle) and I was clear at the instruction start (RTI: as
+    // pulled); i_poll is that I value, no_poll marks the one-cycle NOPs.
     uint8_t irq_line;
     uint8_t nmi_pending;
     uint32_t irq_hist;
@@ -55,9 +55,13 @@ struct cpu6502 {
 
 
 // cpu6502.c is compiled through a wrapper that may define these first:
-//   CPU6502_TICK(cpu)      per-cycle hook, default nothing
-//   CPU6502_IO_RD(cpu, a)  read of a NULL page; must tick the data cycle
-//   CPU6502_IO_WR(cpu, a, v) write of a NULL page; must tick the data cycle
+//   CPU6502_TICK(cpu)      per-cycle hook, default nothing; the machine
+//                          leaves it empty and catches up in CPU6502_SYNC
+//   CPU6502_SYNC(cpu)      called at every instruction start and before a
+//                          RAM write: the machine steps up to cpu->cyc and
+//                          appends one IRQ level bit per cycle to irq_hist
+//   CPU6502_IO_RD(cpu, a)  read of a NULL page; must count the data cycle
+//   CPU6502_IO_WR(cpu, a, v) write of a NULL page; must count the data cycle
 //   CPU6502_TRACE(cpu)     called at every opcode fetch, default nothing
 //   CPU6502_TRACE_IRQ(cpu, nmi) called when an interrupt is taken
 //   CPU6502_CODE_ATTR      attribute for the hot functions (IRAM_ATTR)

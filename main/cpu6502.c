@@ -35,6 +35,9 @@
 #ifndef CPU6502_TABLE_ATTR
 #define CPU6502_TABLE_ATTR
 #endif
+#ifndef CPU6502_SYNC
+#define CPU6502_SYNC(cpu) ((void)0)
+#endif
 #ifndef CPU6502_IO_RD
 #define CPU6502_IO_RD(cpu, addr) (cycle(cpu), (uint8_t)0xff)
 #endif
@@ -52,12 +55,11 @@
 
 // ---- bus -------------------------------------------------------------------
 
-// One bus cycle: advance the machine, then record the IRQ line.
+// One bus cycle. The machine is not stepped here (see CPU6502_SYNC).
 INLINE void cycle(struct cpu6502 *cpu)
 {
     cpu->cyc++;
     CPU6502_TICK(cpu);
-    cpu->irq_hist = (cpu->irq_hist << 1) | cpu->irq_line;
 }
 
 INLINE uint8_t rd(struct cpu6502 *cpu, uint16_t addr)
@@ -75,6 +77,10 @@ INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
     uint8_t *p = cpu->wr_tab[addr >> 8];
     if (__builtin_expect(p != 0, 1)) {
         cycle(cpu);
+        if (addr < 0x8000) {
+            // Display RAM: let the CRTC fetch this cycle before the store.
+            CPU6502_SYNC(cpu);
+        }
         p[addr & 0xff] = v;
         return;
     }
@@ -586,6 +592,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 #define NEXT continue
 
     while ((int32_t)(end - cpu->cyc) > 0) {
+        CPU6502_SYNC(cpu);
         // Interrupt decision for the instruction that just finished: bit 2
         // of the history is the line two cycles before its end.
         if (cpu->nmi_pending) {
@@ -902,6 +909,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(undoc) (void)rd(cpu, cpu->pc); NEXT;
     }
 
+    CPU6502_SYNC(cpu);
     uint32_t ran = cpu->cyc - start;
     cpu->cycles += ran;
     *cpu_in = local;

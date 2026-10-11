@@ -212,3 +212,39 @@ ADC conversions. Phase rules that fell out, all forced by the diff:
 - One cycle of phase on any of these moves an interrupt across an
   instruction boundary, which the diff catches because the IRQ line is
   sampled before the penultimate cycle.
+
+## 2026-10-12: the machine on the board is 8x too slow stepped per cycle
+
+First run of the whole machine (CPU, VIAs, CRTC counters, ADC) on the
+ESP32-S3, MOS 3.20 at the BASIC prompt, measured with profile switches that
+turn parts off:
+
+| Configuration                                   | clocks/cycle |
+| ----------------------------------------------- | ------------ |
+| full machine                                    | 206          |
+| no CRTC step                                    | 123          |
+| no CRTC, no VIA step (empty per-cycle loop)     | 88           |
+| catch-up call per instruction only, empty       | 40           |
+| core alone with page tables and I/O slow paths  | 26           |
+
+Three lessons, each costing an experiment:
+
+1. **One call per emulated cycle is unaffordable**: the Xtensa windowed ABI
+   keeps only a2-a7 of the caller live across a call8, so the core's state
+   spills around every call. Measured at 60+ clocks per cycle. A first
+   restructure moved to one call per instruction (the beebjit shape: the
+   core counts cycles, the machine catches up), which is 14 clocks per
+   cycle.
+2. **Even an empty per-cycle loop in the catch-up costs about 49 clocks per
+   cycle** (taken branches are 2 to 3 clocks each on the LX7 and there is no
+   branch prediction). Peripherals must advance in bulk between events: VIA
+   timers by subtraction with the next underflow precomputed, the ADC by a
+   countdown, the CRTC by a per-character loop with a fast path for the
+   middle of a scanline.
+3. **ROM in flash is free**: copying the MOS into internal RAM changed
+   nothing (identical timings to the microsecond), so the 64 KB data cache
+   holds the hot ROM. ROMs stay in flash as planned.
+
+The core itself went from 12 (Phase 0, flat memory) to 26 with page tables,
+the sync branch on writes and the MOS's hardware polling through the slow
+path; acceptable, to be revisited after the peripherals are fixed.

@@ -3,6 +3,10 @@
 
 #include "crtc.h"
 
+#ifndef CRTC_API
+#define CRTC_API
+#endif
+
 #ifndef CRTC_FETCH
 #define CRTC_FETCH(c, ma, ra, odd) ((void)(ma), (void)(ra), (void)(odd), (uint8_t)0)
 #endif
@@ -29,7 +33,7 @@
 
 enum { DISPEN_HORIZ = 1, DISPEN_VERT = 2, DISPEN_ALL = 3 };
 
-static void crtc_update_cursor_disabled(struct crtc *c)
+static CRTC_API void crtc_update_cursor_disabled(struct crtc *c)
 {
     c->cursor_disabled = ((c->reg[CRTC_R10_CSTART] & 0x60) == 0x20) ||
                          ((c->reg[CRTC_R8_INTERLACE] & 0xc0) == 0xc0);
@@ -45,7 +49,7 @@ CRTC_INLINE void crtc_update_vsync(struct crtc *c)
     CRTC_VSYNC(c, level);
 }
 
-static void crtc_start_new_frame(struct crtc *c)
+static CRTC_API void crtc_start_new_frame(struct crtc *c)
 {
     c->scanline_counter = 0;
     c->vert_counter = 0;
@@ -69,7 +73,7 @@ static void crtc_start_new_frame(struct crtc *c)
 // beebjit's check_r6 / check_r7 tail: run at the start of every scanline and
 // once at reset, and again after an R7 write (which can start a vsync at
 // once on the Hitachi part).
-static void crtc_line_start_checks(struct crtc *c, int from_r6)
+static CRTC_API void crtc_line_start_checks(struct crtc *c, int from_r6)
 {
     if (from_r6) {
         int r6_hit = (c->vert_counter == c->reg[CRTC_R6_VDISP]);
@@ -296,13 +300,13 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
     crtc_line_start_checks(c, 1);
 }
 
-void crtc_set_ula(struct crtc *c, uint8_t ula_control)
+CRTC_API void crtc_set_ula(struct crtc *c, uint8_t ula_control)
 {
     c->ula_clock_fast = (ula_control >> 4) & 1;
     c->ula_teletext = (ula_control >> 1) & 1;
 }
 
-uint8_t crtc_read(const struct crtc *c, int addr)
+CRTC_API uint8_t crtc_read(const struct crtc *c, int addr)
 {
     if (addr == 0) {
         return 0;
@@ -314,7 +318,7 @@ uint8_t crtc_read(const struct crtc *c, int addr)
     return 0;
 }
 
-void crtc_write(struct crtc *c, int addr, uint8_t val)
+CRTC_API void crtc_write(struct crtc *c, int addr, uint8_t val)
 {
     if (addr == 0) {
         c->addr_reg = val;
@@ -385,7 +389,7 @@ void crtc_write(struct crtc *c, int addr, uint8_t val)
     }
 }
 
-void crtc_reset(struct crtc *c)
+CRTC_API void crtc_reset(struct crtc *c)
 {
     // beebjit's choice of power-on registers: a MODE 7 setup, so timing is
     // deterministic (real chips come up with random values).

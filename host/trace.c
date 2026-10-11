@@ -79,6 +79,9 @@ int main(int argc, char **argv)
 
     struct machine *m = &machine;
     machine_init(m);
+    for (int i = 0; i < MACHINE_SWRAM_SLOTS; i++) {
+        m->swram[i] = calloc(0x4000, 1);
+    }
     m->mos = load_rom(dir, "mos.rom");
     m->rom[0x9] = load_rom(dir, "dfs.rom");
     m->rom[0xa] = load_rom(dir, "viewsht.rom");
