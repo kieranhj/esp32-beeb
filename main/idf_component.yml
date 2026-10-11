@@ -1,0 +1,15 @@
+version: "0.1.0"
+
+# Same two registry components FluidBox uses on this board. The CO5300 driver
+# also drives the original SH8601 panel once the 16-pixel gap and the touch
+# address are detected at boot (see fluidbox/main/display.c). Nothing in the
+# Phase 0 skeleton uses them yet; they are declared so the first build resolves
+# everything the later phases need.
+dependencies:
+  idf: ">=5.5"
+  espressif/esp_lcd_co5300:
+    version: "^2.1.0"
+    public: true
+  waveshare/qmi8658:
+    version: "^2.0.0"
+    public: true

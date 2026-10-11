@@ -1,0 +1,33 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# 16 MB QIO flash. Custom partition table: a 3 MB app plus a raw "discs"
+# partition that Phase 4 fills with an embedded disc image bundle.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Octal PSRAM at 80 MHz. Holds disc images, menu assets, the mode 7 font.
+# Nothing in the emulation inner loop may live here (see PLAN.md, budget).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# 240 MHz, both cores. The emulated machine runs on core 1, presentation on
+# core 0, so keep Wi-Fi and the like away from core 1 if they are ever added.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# Largest instruction and data caches with 64-byte lines. The emulator loop
+# must fit in icache or IRAM; the flash-mapped ROM set reads through dcache.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_32B=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# 1 kHz tick so the frame pacing task can wake precisely at 50 Hz.
+CONFIG_FREERTOS_HZ=1000
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

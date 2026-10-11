@@ -1,0 +1,8 @@
+# Name,    Type, SubType, Offset,   Size,   Flags
+nvs,       data, nvs,     0x9000,   0x6000,
+phy_init,  data, phy,     0xf000,   0x1000,
+factory,   app,  factory, 0x10000,  3M,
+# Raw partition for the embedded disc bundle (Phase 4). The target .ssd set is
+# 8.6 MB; the bundle format is up to Phase 4 (see PLAN.md). Read via
+# esp_partition_mmap() so the 1770 model streams sectors straight from flash.
+discs,     data, 0x40,    ,         12M,
