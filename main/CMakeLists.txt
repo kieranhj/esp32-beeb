@@ -1,7 +1,14 @@
 idf_component_register(
     SRCS
         "main.c"
+        "cpu_iram.c"
+        "cpu_video.c"
+        "cpu_flash.c"
+        "cpu_iramsw.c"
+        "cpu_flashv.c"
+        "cpu_iramft.c"
     INCLUDE_DIRS "."
+    EMBED_FILES "6502.bin"
 )
 
 # The emulator's inner loops are integer code with no aliasing to worry about;

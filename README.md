@@ -3,15 +3,18 @@
 A BBC Master 128 emulator for the Waveshare ESP32-S3-Touch-AMOLED-1.8, built
 to play bitshifters demos on its 1.8-inch 368x448 AMOLED.
 
-Status: planning complete, no emulation code yet. See `PLAN.md` for what is
-left and `docs/decisions.md` for why it is shaped this way. `CLAUDE.md` is the
-handoff for whoever (or whatever) picks it up next.
+Status: Phase 0 done. The cycle-stepped 6502 core runs at 12 to 17 host
+clocks per emulated cycle on the board (budget 120), so the accuracy-first
+design stands. See `PLAN.md` for what is left and `docs/decisions.md` for the
+numbers and why it is shaped this way. `CLAUDE.md` is the handoff for whoever
+(or whatever) picks it up next.
 
 ## Layout
 
 | Path             | Contents                                                   |
 | ---------------- | ---------------------------------------------------------- |
-| `main/`          | ESP-IDF application (skeleton only for now)                |
+| `main/`          | ESP-IDF application: `cpu6502.c` core, Phase 0 benchmark in `main.c` |
+| `host/`          | Desktop build of the core with the Klaus Dormann 6502 tests |
 | `discs/`         | Target disc images: bitshifters `.ssd` set plus NICCC `.dsd` |
 | `roms/mos3.20/`  | Master 128 MOS 3.20 ROM set (Acorn copyright, do not redistribute) |
 | `tools/`         | `capture.py` serial capture; test and bundle tools to come |

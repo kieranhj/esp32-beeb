@@ -10,15 +10,19 @@ left to do, in order. Tick items off and delete phases as they finish.
 
 ## Status
 
-Nothing is implemented. The ESP-IDF skeleton builds and prints heap sizes.
-Phase 0 is next.
+Phase 0 is done: the measured cost is 12 to 17 host clocks per emulated cycle
+for the CPU alone and 35 to 41 with a video-shaped per-cycle step, against a
+budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
+design stands. `main/cpu6502.c` is a documented-opcode NMOS 6502 with exact
+bus sequencing that passes the Klaus Dormann tests on the host and the board;
+`main/main.c` is still the Phase 0 benchmark. Phase 1 is next.
 
 ## The budget
 
 - 6502 at 2 MHz, host at 240 MHz: **120 host clocks per emulated cycle**.
-  Target spend: about 40 CPU, about 30 CRTC/ULA, about 10 VIAs, the rest
-  margin. Above about 80 clocks measured in Phase 0, the video model changes
-  (see Phase 0 fallback) before anything else is written.
+  Measured in Phase 0: 12 to 17 for the CPU, about 24 more for a video-shaped
+  per-cycle step. Target spend from here: 20 CPU, 40 CRTC/ULA, 15 VIAs, the
+  rest margin. Re-measure in Phase 3 with core 0 driving the panel.
 - Core 1 runs the machine. Core 0 scales, drives the panel, mixes audio, reads
   touch and IMU. Lines cross between them through a scanline ring buffer.
 - Hot data in internal SRAM only: 64 KB Master RAM (main, shadow, ANDY,
@@ -26,34 +30,19 @@ Phase 0 is next.
   ring. ROMs read from flash through the data cache via a 16-entry bank
   pointer table. PSRAM holds discs, the mode 7 font and menu assets only.
 - The emulator loop and its tables must be placed in IRAM/DRAM (`IRAM_ATTR`,
-  `DRAM_ATTR`) and verified with the map file; an icache miss storm is the
-  silent failure mode on this chip.
-
-## Phase 0: measure (1 to 2 days)
-
-Goal: one number, host clocks per emulated 6502 cycle, measured on the board.
-
-- [ ] Minimal 6502 interpreter in `main/cpu6502.c`: documented opcodes only,
-      cycle counted per bus access (one function call or inline per cycle,
-      the structure Phase 1 will keep), flat 64 KB RAM, no I/O.
-- [ ] Run beebjit's timing ROM or a tight synthetic loop for 10 s; print
-      cycles/s and clocks per cycle over the serial console.
-- [ ] Repeat with a per-cycle hook that does representative CRTC/ULA work
-      (increment a character counter, fetch a byte, shift 8 pixels into a
-      line buffer) to measure the video tax.
-- [ ] Repeat with the loop forced into flash (no `IRAM_ATTR`) to see the
-      cache penalty, so the placement rules are grounded in a number.
-- [ ] Record all numbers in `docs/decisions.md` under "Phase 0 results".
-
-Fallback if the number is bad: step the video at 1 MHz character clock with
-the CPU taking two steps per video step, and only model mid-character palette
-changes to the nearest character cell. Document the choice.
+  `DRAM_ATTR`) and verified with the map file. Phase 0 found no penalty yet
+  (the hot set fits the shared 32 KB icache), but core 0 will compete for the
+  same caches once the panel runs. Keep the hot working set small.
+- Hot state in locals inside the run loop, computed-goto dispatch, 32-bit
+  cycle counter: the three things Phase 0 measured as mattering. Details in
+  `docs/decisions.md`.
 
 ## Phase 1: the machine without a screen
 
-- [ ] 6502 complete: all 256 opcodes including undocumented ones, exact
-      read/write sequencing per cycle (dummy reads, page-crossing, RMW double
-      writes), NMI/IRQ timing, decimal mode.
+- [ ] 6502 complete: the remaining undocumented opcodes (the dispatch table
+      in `cpu6502.c` sends them to `op_undoc`), interrupt polling on the
+      penultimate cycle rather than at instruction boundaries, and the
+      Phase 0 benchmark replaced by the machine in `main/main.c`.
 - [ ] Master memory map: ROMSEL (0xFE30) with ANDY, ACCCON (0xFE34) with
       HAZEL, shadow (Y), VDU-driver shadow select (E/X), TST bit ignored.
       All paging as pointer-table updates, never copies.

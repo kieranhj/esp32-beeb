@@ -9,10 +9,12 @@ is only what is left, decisions.md is why, this file is how.
 A cycle-stepped BBC Master 128 emulator written for the ESP32-S3 inside the
 Waveshare ESP32-S3-Touch-AMOLED-1.8, to play the bitshifters demos in `discs/`
 on its 368x448 AMOLED. Accuracy of CRTC/ULA tricks is the goal. It is not a
-port: beebjit is the reference and test oracle, not the engine. Nothing is
-implemented yet beyond a skeleton that builds; Phase 0 (measure host clocks
-per emulated cycle on the real board) is the first task and its result gates
-the design. Do not skip it.
+port: beebjit is the reference and test oracle, not the engine. Phase 0
+(measure host clocks per emulated cycle on the real board) is done and the
+numbers are in `docs/decisions.md`; the cycle-stepped design stands. What
+exists: `main/cpu6502.c`, a documented-opcode NMOS 6502 with exact bus
+sequencing, and `main/main.c`, which is still the Phase 0 benchmark harness.
+Phase 1 is next.
 
 The user is Kieran, a bitshifters member who wrote several of these demos and
 built the beebjit and b2 libretro cores in `../rg40xxv`. Assume deep BBC Micro
@@ -34,6 +36,15 @@ knowledge; explain ESP32 specifics, not 6502 or 6845 ones.
 
 ## Commands
 
+Host build of the core (no ESP-IDF needed) and the Klaus Dormann tests, from
+Git Bash. There is no gcc on this machine; `zig cc` (clang) is on PATH:
+
+```sh
+sh host/build.sh        # builds host/klaus.exe, host/decimal.exe and runs both
+```
+
+Board:
+
 ```powershell
 idf.py set-target esp32s3 build          # first build fetches components
 idf.py -p COM3 flash                     # app + bootloader + partition table
@@ -43,8 +54,21 @@ idf.py size-components                   # where flash/IRAM/DRAM went
 ```
 
 Map file for placement checks: `build/esp32-beeb.map`. Confirm hot functions
-landed in IRAM (`.iram0.text`) and hot tables in DRAM, not in `.flash.text` /
-`.flash.rodata`.
+landed in IRAM (`.iram1.N` input sections under `.iram0.text`) and hot tables
+in DRAM (`.dram1.N`), not in `.flash.text` / `.flash.rodata`. Disassembly:
+`C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-objdump.exe -d build/esp32-beeb.elf`.
+Look for `jx` to confirm table dispatch and for `callx8` inside the run loop
+to catch helpers that failed to inline.
+
+The core is built in several variants by tiny wrapper files (`main/cpu_*.c`)
+that set `CPU6502_FN`, `CPU6502_CODE_ATTR`, `CPU6502_TABLE_ATTR`,
+`CPU6502_TICK` and then `#include "cpu6502.c"`. That is how the per-cycle
+hook is inlined without a function pointer, and how Phase 0 compared
+placements. Phase 1 keeps one variant and hangs the machine off the hook.
+
+`sdkconfig` already exists, so a change to `sdkconfig.defaults` does not take
+effect until it is also made in `sdkconfig` (or `sdkconfig` is deleted and
+regenerated).
 
 Restoring other firmware on the board, from their own project folders:
 FluidBox is `../esp32-fluidbox/fluidbox` (`idf.py -p COM3 flash`); the stock
@@ -88,12 +112,16 @@ at offset 0. This is a V2 board (CO5300 panel, CST820 touch).
 
 ## Working rules for this repo
 
-- Phase order in `PLAN.md` is deliberate; finish the measurement in Phase 0
-  and write its numbers into `docs/decisions.md` before Phase 1.
+- Phase order in `PLAN.md` is deliberate. Any change to the run loop's
+  structure (state in locals, computed-goto dispatch, 32-bit cycle counter)
+  gets re-measured with the Phase 0 harness before it is kept; the harness
+  stays in git history at the Phase 0 commit.
 - Core emulation files (`cpu6502.c`, `via.c`, `crtc.c`, `ula.c`,
   `machine.c`) must compile on a desktop C compiler with no ESP headers, so
   trace and frame diffs against beebjit run on the PC.
-- Every accuracy claim gets a diff against beebjit, not a visual check.
+- Every accuracy claim gets a diff against beebjit, not a visual check. The
+  Klaus Dormann tests (`sh host/build.sh`) must keep passing after any CPU
+  change; they take under a second.
 - Commit after each ticked item in `PLAN.md` with a message saying what
   changed and the measured effect if any.
 - Nothing from `discs/` or `roms/` is to be published; the discs belong to

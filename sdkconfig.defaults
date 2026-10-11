@@ -31,3 +31,7 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# The emulator owns core 1 and never yields to its idle task; do not let the
+# task watchdog complain about that.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

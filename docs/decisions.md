@@ -58,6 +58,64 @@ Important to the user but allowed to slip if it unblocks the rest. Demos in
 NuLA (`bs-bbcnula1/2.ssd`, `wip/edge-beeb-nula.ssd`,
 `wip/edge-beeb-cpc-nula.ssd`), tape, Tube, serial, ADFS, Music 5000.
 
-## Phase 0 results
+## 2026-10-11: Phase 0 results
 
-(not yet measured)
+Measured on the board (ESP32-S3 at 240 MHz, core 1, nothing else running) with
+`main/main.c` as committed at this date: a cycle-stepped 6502 in
+`main/cpu6502.c`, documented opcodes with the exact NMOS bus sequence, flat
+64 KB RAM in internal SRAM. Two workloads of 20 M emulated cycles each: a
+synthetic demo inner loop (indirect/indexed copy with zp and abs RMW) and the
+first 20 M cycles of Klaus Dormann's functional test (a heavier mix: lots of
+compare/branch, stack and flag traffic). Host clocks per emulated 2 MHz cycle:
+
+| Build of the same core                                | synth | klaus | realtime |
+| ----------------------------------------------------- | ----- | ----- | -------- |
+| First cut: switch dispatch, state through a pointer   | 29.8  | 34.5  | 3.5x     |
+| + state in a local copy (no reload after each store)  | 23.7  | 30.2  | 4.0x     |
+| + computed-goto table (DRAM), 32-bit cycle counter    | 11.9  | 16.8  | 7.2x     |
+| same, switch dispatch instead of the table            | 21.2  | 27.0  | 4.4x     |
+| **table build + representative video tick per cycle** | **35.4** | **41.1** | **2.9x** |
+| table build, core in flash instead of IRAM            | 11.9  | 16.8  | 7.2x     |
+| table + video tick, core (43 KB) in flash             | 35.4  | 41.2  | 2.9x     |
+| table build, dispatch table in flash rodata           | 11.9  | 16.8  | 7.2x     |
+
+The video tick (fetch a display byte, expand 8 pixels into a line buffer as
+two 32-bit words, advance a horizontal counter, count lines) costs 24 clocks
+per cycle on top of the CPU. That is a stand-in for the CRTC/ULA step, not
+the real thing, but it is the right shape of work.
+
+**Decision: proceed with the cycle-stepped design, no fallback.** The budget
+is 120 clocks per cycle; CPU plus a video-shaped step measures 41 on the worst
+workload, leaving about 80 for the real CRTC, ULA, two VIAs and margin.
+
+What the numbers taught, now rules for Phase 1 onwards:
+
+1. **Hot state lives in locals inside the run loop.** A byte store through the
+   emulated memory pointer can alias any struct field, so with state behind a
+   pointer GCC reloads every register after every bus write. `cpu6502_run`
+   copies the state struct to a local and writes it back on exit: 6 clocks
+   per cycle. Peripheral state stepped from the per-cycle hook must be in the
+   same local copy (Phase 0 used `cpu->hook[]` for this).
+2. **Computed-goto dispatch, not `switch`.** GCC 14 for Xtensa compiles a
+   dense 256-way switch into a compare tree, not a jump table. The label
+   table is worth 9 to 10 clocks per cycle (about 30 per instruction).
+3. **32-bit cycle counter in the loop.** The 64-bit increment and compare on
+   every bus access showed up; the total is folded into a 64-bit field on
+   exit.
+4. **IRAM/DRAM placement made no measurable difference** at this size, even
+   for the 43 KB video build, because the hot working set fits the 32 KB
+   icache and nothing else was running. Keep the placement rule anyway as
+   cheap insurance: both cores share the caches, and core 0's panel and
+   scaler code will compete in Phase 3. Re-measure then, with core 0 busy.
+5. **Flash versus IRAM is not the cache risk; working set is.** Inlining the
+   video hook into every bus access grew the core from 10.5 KB to 43 KB. Keep
+   the per-cycle step small or out of line, and keep the opcode handlers
+   compact, so the hot set stays well under 32 KB once the VIAs and video
+   are real.
+6. The task watchdog must not watch core 1's idle task
+   (`CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n`); the emulator never yields.
+
+Correctness at this point: Klaus Dormann's 6502 functional test and the NMOS
+decimal test pass on the host build and on the board (96,090,063 cycles for
+the functional test). Cycle timing of each opcode is by construction, not yet
+verified; Phase 1 diffs it against beebjit.
