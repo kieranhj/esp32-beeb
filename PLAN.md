@@ -16,11 +16,13 @@ budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
 design stands. `main/cpu6502.c` is a 65C12 (with an NMOS mode) with exact
 bus sequencing that passes the Klaus Dormann tests on the host and the board.
 `main/machine.c`
-is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs. On
-the host, MOS 3.20 boots and the instruction trace matches beebjit cycle for
-cycle for 1.44 M cycles (393,940 instructions), up to the first vsync
-interrupt, which needs the real CRTC. `main/main.c` is still the Phase 0
-benchmark. Phase 2 (CRTC) is next; the ESP build of the machine comes with it.
+is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs, and
+the 6845 state machine in `main/crtc.c` (counters, syncs, address generation,
+no pixels yet). On the host, MOS 3.20 boots and the instruction trace matches
+beebjit cycle for cycle for the first 10 M cycles (2.77 M instructions),
+including every VIA, vsync and ADC interrupt. `main/main.c` is still the
+Phase 0 benchmark. Next: the machine on the board with a clocks-per-cycle
+measurement, then the pixel side of Phase 2.
 
 ## The budget
 
@@ -65,9 +67,15 @@ benchmark. Phase 2 (CRTC) is next; the ESP build of the machine comes with it.
 
 ## Phase 2: video
 
-- [ ] 6845 CRTC stepped per character clock: all registers, R0..R9 effects
-      mid-frame (vertical rupture), R12/R13 at the right latch point, cursor,
-      interlace, the skew the ULA applies.
+- [x] 6845 CRTC stepped per 2 MHz tick (`main/crtc.c`, beebjit's state
+      machine restated): all registers, R0..R9 mid-frame effects, R12/R13
+      latch point, cursor skew, interlace, DISPEN skew, vsync into CA1.
+      Verified by the trace diff through boot; the CRTC test discs will
+      verify the rest once there are pixels and a frame diff.
+- [ ] A frame diff needs a way to get a frame out of beebjit: there is no
+      `BEEBJIT_DUMP_FRAME`; the debugger has `frame_buffer_crc32` and
+      `render_x/y`, so either compare CRCs or add a dump to our beebjit
+      build (`out/beebjit-win` is built from source by our script).
 - [ ] Video ULA at the pixel clock: control register, 16-entry palette,
       teletext/graphics select, 2 MHz vs 1 MHz character rate, flash colour,
       mid-line palette writes landing on the right pixel.

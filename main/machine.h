@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include "cpu6502.h"
 #include "via.h"
+#include "crtc.h"
 
 #define MACHINE_SWRAM_SLOTS 4   // slots 4..7
 
@@ -61,14 +62,13 @@ struct machine {
     // ADC (uPD7002): a write to the control register starts a conversion of
     // 4 ms (8 bit) or 10 ms (12 bit); completion drops system VIA CB1.
     uint8_t adc_ctrl, adc_busy, adc_ready;
-    uint32_t adc_countdown;
+    uint32_t adc_countdown;   // 2 MHz cycles
 
-    // Stubs that Phase 2 and 4 replace with real models.
-    uint8_t crtc_addr, crtc_reg[32];
+    struct crtc crtc;
     uint8_t ula_ctrl, ula_pal[16];
+
+    // Stubs that Phase 4 replaces with real models.
     uint8_t fdc_ctrl;
-    uint32_t vsync_counter;     // fake 50 Hz vsync into system VIA CA1
-    uint8_t vsync_level;
 };
 
 void machine_init(struct machine *m);  // zero state, build tables, VIAs

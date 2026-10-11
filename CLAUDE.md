@@ -42,8 +42,17 @@ Git Bash. There is no gcc on this machine; `zig cc` (clang) is on PATH:
 ```sh
 sh host/build.sh                 # builds host/cputest.exe, runs the five Klaus tests
 sh tools/build_beebjit_win.sh    # native beebjit.exe into out/beebjit-win/ (the oracle)
-out/beebjit-win/beebjit.exe -master -mode interp -headless -fast -debug -print     -commands "breakat 1000000;c;q" > trace.txt   # 1 M cycles of Master boot
+zig cc -O2 -std=c11 -Wall -Wextra -Wno-unused-function -o host/trace.exe host/trace.c
+(cd out/beebjit-win && ./beebjit.exe -master -mode interp -headless -fast -accurate \
+    -debug -print -opt debug:print-ticks -commands "breakat 2000000;c;q") > out/bj.txt
+host/trace.exe roms/mos3.20 2000000 > out/ours.txt
+python tools/tracediff.py out/bj.txt out/ours.txt     # first divergence, with context
+TRACE_DEBUG=1 host/trace.exe roms/mos3.20 2000000 2>&1 >/dev/null | head   # VIA flags per IRQ
 ```
+
+`-accurate` on the beebjit side is not optional: without it the VIAs run on
+wall time and the trace is irreproducible. beebjit's debugger `eval` of VIA
+registers (`sysvia_r[n]`) returns stale timer values; use the trace instead.
 
 Board:
 
@@ -62,11 +71,13 @@ in DRAM (`.dram1.N`), not in `.flash.text` / `.flash.rodata`. Disassembly:
 Look for `jx` to confirm table dispatch and for `callx8` inside the run loop
 to catch helpers that failed to inline.
 
-The core is built in several variants by tiny wrapper files (`main/cpu_*.c`)
-that set `CPU6502_FN`, `CPU6502_CODE_ATTR`, `CPU6502_TABLE_ATTR`,
-`CPU6502_TICK` and then `#include "cpu6502.c"`. That is how the per-cycle
-hook is inlined without a function pointer, and how Phase 0 compared
-placements. Phase 1 keeps one variant and hangs the machine off the hook.
+The core is built by including it: `machine.c` defines `CPU6502_TICK`,
+`CPU6502_IO_RD/WR` and the `CRTC_*` hooks, then includes `via.c`, `crtc.c`
+and `cpu6502.c`, so the per-cycle hook, the CRTC step and the I/O paths
+inline into the core with no function pointers. The Phase 0 benchmark
+(`main/cpu_*.c`) builds the bare core the same way with different placement
+attributes. `host/trace.c` includes `machine.c` with `CPU6502_TRACE`
+defined. Keep that shape: one translation unit per machine.
 
 `sdkconfig` already exists, so a change to `sdkconfig.defaults` does not take
 effect until it is also made in `sdkconfig` (or `sdkconfig` is deleted and

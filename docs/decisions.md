@@ -189,3 +189,26 @@ found by the diff:
 - the two deliberate differences from beebjit (BIT immediate flags, decimal
   N/Z) are behind `CPU6502_ORACLE_COMPAT`, which only the trace harness
   sets; the real build follows the chip and the Klaus tests.
+
+## 2026-10-11: CRTC in, 10 M cycles of boot identical to beebjit
+
+`main/crtc.c` is beebjit's `video_advance_crtc_timing` turned into a
+per-tick stepper with the same latches in the same order (the start-of-line
+check chain, R4/R5/R9 hits latched per scanline, odd and even vsync in
+interlace, the dummy raster, R7 writes starting a vsync at once). With it the
+trace diff is identical for the first 10 M cycles (2,768,856 instructions),
+which covers boot, the BASIC prompt, cursor flashing and the MOS's periodic
+ADC conversions. Phase rules that fell out, all forced by the diff:
+
+- The CRTC processes system tick k during the CPU cycle that ends at count
+  k+1, in 1 MHz mode stepping its counters on odd ticks and fetching on even
+  ones.
+- The VIAs step on odd cycle counts, not on the even 1 MHz boundary: beebjit
+  expires T1 on the tick after the boundary, and a 1 MHz access lands on an
+  odd count with that step already applied. A T1 write loads latch + 1 so
+  that the readback and the fire time both match.
+- The ADC is a 2 MHz-cycle countdown from the end of the stretched write
+  (it can expire on an even count), 20000 or 8000 cycles.
+- One cycle of phase on any of these moves an interrupt across an
+  instruction boundary, which the diff catches because the IRQ line is
+  sampled before the penultimate cycle.

@@ -1,14 +1,16 @@
 // esp32-beeb: BBC Master 128 machine. See machine.h.
 //
-// Timing model. The core calls machine_tick() once per 2 MHz cycle. On every
-// even cycle count (a 1 MHz boundary) the VIAs step. A read or write of a
+// Timing model. The core calls machine_tick() once per 2 MHz cycle. The CRTC
+// steps every cycle; the VIAs and ADC step on odd cycle counts (beebjit's
+// VIA timers expire one tick after the 1 MHz boundary). A read or write of a
 // 1 MHz address is stretched the way the real bus does it (beebjit's rule,
 // confirmed on hardware): with the cycle count c before the access, the CPU
 // idles for one cycle if c is even or two if it is odd, performs the access
-// in the middle of that 1 MHz cycle, then the data cycle completes at the
-// boundary. 2 MHz hardware is "tick then access", except the video ULA at
-// 0xFE20-0xFE23 which is "access then tick".
+// at the odd count with that count's 1 MHz step already applied, then the
+// data cycle completes. 2 MHz hardware is "tick then access", except the
+// video ULA at 0xFE20-0xFE23 which is "access then tick".
 
+#include <stddef.h>
 #include <string.h>
 
 #include "machine.h"
@@ -20,6 +22,14 @@
 #include "via.c"
 
 #define INLINE static inline __attribute__((always_inline))
+
+struct machine;
+static uint8_t machine_display_fetch(struct machine *m, uint16_t ma, uint8_t ra, int odd);
+static void machine_vsync(struct machine *m, int level);
+#define CRTC_FETCH(c, ma, ra, odd) machine_display_fetch(crtc_owner(c), ma, ra, odd)
+#define CRTC_VSYNC(c, level) machine_vsync(crtc_owner(c), level)
+static struct machine *crtc_owner(struct crtc *c);
+#include "crtc.c"
 
 // ---- paging -----------------------------------------------------------------
 
@@ -174,6 +184,11 @@ static void sysvia_port_b(struct machine *m)
     } else {
         m->ic32 &= ~bit;
     }
+    // IC32 bits 4,5: hardware scroll wrap size (beebjit's table).
+    {
+        static const uint16_t wrap[4] = {0x4000, 0x2000, 0x5000, 0x2800};
+        m->crtc.screen_wrap_add = wrap[(m->ic32 >> 4) & 3];
+    }
 
     // CMOS/RTC control: PB6 enable, PB7 address strobe, IC32 bit 1 read,
     // bit 2 data (beebjit's cmos.c).
@@ -211,29 +226,71 @@ INLINE void machine_update_irq(struct machine *m, struct cpu6502 *cpu)
     cpu->irq_line = m->sysvia.irq | m->usrvia.irq;
 }
 
+// ---- display memory ---------------------------------------------------------
+
+static struct machine *crtc_owner(struct crtc *c)
+{
+    return (struct machine *)((char *)c - offsetof(struct machine, crtc));
+}
+
+static void machine_vsync(struct machine *m, int level)
+{
+    via_set_ca1(&m->sysvia, level);
+}
+
+// beebjit's video_read_data_byte for the Master: MODE 7 style addressing
+// when MA13 is set, else MA*8 + RA with the IC32 wrap; display comes from
+// LYNNE when ACCCON D xor X, with ANDY and HAZEL visible below 0x3000 when
+// paged in and D set.
+static uint8_t machine_display_fetch(struct machine *m, uint16_t ma, uint8_t ra, int odd)
+{
+    uint32_t addr;
+    if (ma & 0x2000) {
+        addr = 0x7c00 | (ma & 0x3ff);
+        if (!m->crtc.ula_teletext && m->crtc.ula_clock_fast && !odd) {
+            addr ^= 64;  // 2 MHz bitmap fetch through the MODE 7 path
+        }
+    } else {
+        addr = (uint32_t)ma * 8 + (ra & 7);
+        if (ma & 0x1000) {
+            addr -= m->crtc.screen_wrap_add;
+        }
+        addr &= 0x7fff;
+    }
+    int shadow = ((m->acccon & 1) ^ ((m->acccon >> 2) & 1)) != 0;
+    if (addr >= 0x3000) {
+        return shadow ? m->lynne[addr - 0x3000] : m->ram[addr];
+    }
+    if (m->acccon & 1) {
+        if (addr < 0x1000) {
+            if (m->romsel & 0x80) {
+                return m->andy[addr];
+            }
+        } else if (m->acccon & 0x08) {
+            return m->hazel[addr - 0x1000];
+        }
+    }
+    return m->ram[addr];
+}
+
 INLINE void machine_tick(struct cpu6502 *cpu)
 {
     struct machine *m = cpu->m;
-    if (cpu->cyc & 1) {
-        return;
-    }
-    via_tick(&m->sysvia);
-    via_tick(&m->usrvia);
-
-    // Placeholder vsync until the CRTC exists: 50 Hz, 128 us pulse.
-    if (++m->vsync_counter >= 20000) {
-        m->vsync_counter = 0;
-        m->vsync_level = 1;
-        via_set_ca1(&m->sysvia, 1);
-    } else if (m->vsync_level && m->vsync_counter == 128) {
-        m->vsync_level = 0;
-        via_set_ca1(&m->sysvia, 0);
-    }
+    crtc_tick(&m->crtc, cpu->cyc - 1);
     if (m->adc_busy && --m->adc_countdown == 0) {
         m->adc_busy = 0;
         m->adc_ready = 1;
         via_set_cb1(&m->sysvia, 0);
     }
+    // The VIAs step on odd cycle counts: beebjit's VIA timers expire on the
+    // tick after the 1 MHz boundary, and a 1 MHz access lands on an odd
+    // count with that tick already applied (see the stretch below).
+    if (!(cpu->cyc & 1)) {
+        machine_update_irq(m, cpu);
+        return;
+    }
+    via_tick(&m->sysvia);
+    via_tick(&m->usrvia);
     machine_update_irq(m, cpu);
 }
 
@@ -268,7 +325,10 @@ static void adc_write(struct machine *m, uint8_t val)
     m->adc_ctrl = val;
     m->adc_busy = 1;
     m->adc_ready = 0;
-    m->adc_countdown = (val & 0x08) ? 20000 : 8000;  // 2 MHz cycles
+    // 10 ms (12 bit) or 4 ms in 2 MHz cycles, counted from the end of the
+    // stretched write as beebjit does; the +1 is the cycle that completes
+    // the write after this call.
+    m->adc_countdown = (val & 0x08) ? 20001 : 8001;
     via_set_cb1(&m->sysvia, 1);
 }
 
@@ -299,11 +359,7 @@ static uint8_t sheila_read(struct machine *m, struct cpu6502 *cpu, uint16_t addr
     uint8_t ret = 0xfe;
     switch (addr & 0xfffc) {
     case 0xfe00: case 0xfe04:
-        if (addr & 1) {
-            ret = (m->crtc_addr >= 12 && m->crtc_addr < 18) ? m->crtc_reg[m->crtc_addr] : 0;
-        } else {
-            ret = 0;
-        }
+        ret = crtc_read(&m->crtc, addr & 1);
         break;
     case 0xfe08: case 0xfe0c:
         ret = (addr & 1) ? 0 : acia_status(m);
@@ -357,11 +413,7 @@ static void sheila_write(struct machine *m, struct cpu6502 *cpu, uint16_t addr, 
 {
     switch (addr & 0xfffc) {
     case 0xfe00: case 0xfe04:
-        if (addr & 1) {
-            m->crtc_reg[m->crtc_addr & 31] = val;
-        } else {
-            m->crtc_addr = val & 31;
-        }
+        crtc_write(&m->crtc, addr & 1, val);
         break;
     case 0xfe08: case 0xfe0c:
         if (!(addr & 1)) {
@@ -381,6 +433,7 @@ static void sheila_write(struct machine *m, struct cpu6502 *cpu, uint16_t addr, 
             m->ula_pal[val >> 4] = val & 0xf;
         } else {
             m->ula_ctrl = val;
+            crtc_set_ula(&m->crtc, val);
         }
         break;
     case 0xfe24:
@@ -533,6 +586,10 @@ void machine_reset(struct machine *m)
     remap_all(m);
     via_reset(&m->sysvia);
     via_reset(&m->usrvia);
+    m->ula_ctrl = 0x02;  // teletext, 1 MHz, as beebjit's power-on ULA
+    crtc_set_ula(&m->crtc, m->ula_ctrl);
+    m->crtc.screen_wrap_add = 0;
+    crtc_reset(&m->crtc);
     m->cpu.cycles = 0;
     m->cpu.cyc = 0;
     cpu6502_reset(&m->cpu);
