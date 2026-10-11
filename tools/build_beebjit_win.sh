@@ -3,7 +3,13 @@
 # for use as the trace and frame oracle. Output: out/beebjit-win/beebjit.exe
 # with the ROM set beside it. Run from the repo root in Git Bash:
 #   sh tools/build_beebjit_win.sh
-#   out/beebjit-win/beebjit.exe -master -mode interp -headless -fast -debug -print -commands "breakat 100000;c;q"
+#   out/beebjit-win/beebjit.exe -master -mode interp -headless -fast -accurate \
+#       -debug -print -commands "breakat 100000;c;q"
+#
+# The sources are copied to out/beebjit-src and patched before building:
+#   - a debugger command "dumpframe <file>" that writes the render buffer
+#     (two uint32 for width and height, then width*height ARGB words), for
+#     tools/framediff.py; beebjit has no frame dump of its own.
 #
 # Why not build_win_opt.sh: that needs mingw gcc, which is not installed.
 # zig cc assembles the x64 .S files fine but its assembler, unlike GNU as,
@@ -13,13 +19,39 @@ set -e
 cd "$(dirname "$0")/.."
 SRC=../rg40xxv/beebjit
 OUT=out/beebjit-win
-mkdir -p "$OUT"
+PATCHED=out/beebjit-src
+mkdir -p "$OUT" "$PATCHED"
+rm -rf "$PATCHED"/*
+cp -r "$SRC"/*.c "$SRC"/*.h "$SRC"/asm "$PATCHED"/
+
+python -I - "$PATCHED/debug.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read()
+anchor = '    } else if (!strcmp(p_command, "writem")) {'
+assert anchor in s and 'dumpframe' not in s
+add = '''    } else if (!strcmp(p_command, "dumpframe") && (p_param_1_str != NULL)) {
+      struct render_struct* p_r = bbc_get_render(p_bbc);
+      uint32_t hdr[2];
+      struct util_file* p_f;
+      hdr[0] = render_get_width(p_r);
+      hdr[1] = render_get_height(p_r);
+      p_f = util_file_open(p_param_1_str, 1, 1);
+      util_file_write(p_f, hdr, sizeof(hdr));
+      util_file_write(p_f, render_get_buffer(p_r), ((uint64_t) hdr[0] * hdr[1] * 4));
+      util_file_close(p_f);
+'''
+s = s.replace(anchor, add + anchor)
+open(p, 'w', newline='\n').write(s)
+print("debug.c patched: dumpframe")
+PYEOF
+
 cat > "$OUT/stub.c" <<'STUB'
 /* beebjit declares this label .globl in asm/x64/asm_inturbo_x64.S but never
  * defines it; GNU as lets that pass, clang's assembler does not. */
 void asm_instruction_Bxx_interp_accurate_jb_patch(void) {}
 STUB
-cd "$SRC"
+cd "$PATCHED"
 zig cc -target x86_64-windows-gnu -D__USE_MINGW_ANSI_STDIO=0 \
     -Wall -Wno-unknown-warning-option -Wno-address-of-packed-member \
     -O2 -DNDEBUG -o "$OLDPWD/$OUT/beebjit.exe" \

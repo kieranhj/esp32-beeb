@@ -13,12 +13,12 @@
 //
 // Hooks the including translation unit defines (defaults do nothing):
 //   CRTC_FETCH(c, ma, ra, odd)   returns the display byte for MA/RA
-//   CRTC_RENDER(c, data, dispen, odd)  pixel output for one tick
+//   CRTC_RENDER(c, data, dispen, odd, ma13)  pixel output for one tick
 //   CRTC_HSYNC(c, width)         start of horizontal sync pulse
 //   CRTC_VSYNC(c, level)         vsync level change (system VIA CA1)
 //   CRTC_CURSOR(c)               cursor shown at this character
 //   CRTC_TELETEXT(c, data, dispen)  teletext data pipeline, even ticks
-//   CRTC_RA(c, ra)               external RA changed (teletext/renderer)
+//   CRTC_RA(c, ra, isv)          external RA changed (teletext/renderer)
 
 #ifndef CRTC_H
 #define CRTC_H
@@ -74,6 +74,7 @@ struct crtc {
     uint8_t dispen_shifts[4];
     uint8_t r4_hit, r5_hit, r9_hit;      // latched per scanline, as beebjit
     uint8_t data_byte;
+    uint8_t data_ma13;                   // MA13 of the last fetch
     uint8_t vsync_changed;               // set by crtc_update_vsync, cleared by crtc_run
     uint32_t stat_fast, stat_slow;       // ticks by path, with MACHINE_STATS
 };

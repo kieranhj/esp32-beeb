@@ -11,7 +11,7 @@
 #define CRTC_FETCH(c, ma, ra, odd) ((void)(ma), (void)(ra), (void)(odd), (uint8_t)0)
 #endif
 #ifndef CRTC_RENDER
-#define CRTC_RENDER(c, data, dispen, odd) ((void)0)
+#define CRTC_RENDER(c, data, dispen, odd, ma13) ((void)0)
 #endif
 #ifndef CRTC_HSYNC
 #define CRTC_HSYNC(c, width) ((void)0)
@@ -26,7 +26,7 @@
 #define CRTC_TELETEXT(c, data, dispen) ((void)0)
 #endif
 #ifndef CRTC_RA
-#define CRTC_RA(c, ra) ((void)0)
+#define CRTC_RA(c, ra, isv) ((void)0)
 #endif
 
 #define CRTC_INLINE static inline __attribute__((always_inline))
@@ -100,7 +100,7 @@ static CRTC_API void crtc_line_start_checks(struct crtc *c, int from_r6)
         if (c->scanline_counter == c->cursor_start_line) {
             c->has_hit_cursor_line_start = 1;
         }
-        CRTC_RA(c, ra);
+        CRTC_RA(c, ra, c->is_isv);
     }
     c->r4_hit = (c->vert_counter == c->reg[CRTC_R4_VTOTAL]);
     c->r5_hit = (c->vert_adjust_counter == c->reg[CRTC_R5_VADJ]);
@@ -155,6 +155,7 @@ CRTC_INLINE uint8_t crtc_rendering_tick(struct crtc *c, uint8_t horiz_counter,
     }
     uint16_t ma = c->address_counter;
     uint8_t data = CRTC_FETCH(c, ma, ra, is_odd_tick);
+    c->data_ma13 = (ma >> 13) & 1;
     if (!is_odd_tick) {
         // The IC15 latch only passes data and DISPEN to the teletext chip
         // under MODE 7 style (MA13 set) addressing.
@@ -182,7 +183,7 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
     if (!is_1mhz || !is_odd_tick) {
         c->data_byte = crtc_rendering_tick(c, horiz_counter, r0_hit, c->r9_hit, is_odd_tick);
     }
-    CRTC_RENDER(c, c->data_byte, c->dispen_shifts[c->skew_dispen_index], is_odd_tick);
+    CRTC_RENDER(c, c->data_byte, c->dispen_shifts[c->skew_dispen_index], is_odd_tick, c->data_ma13);
 
     if (is_1mhz && !is_odd_tick) {
         return;
@@ -384,27 +385,29 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
         ra |= c->is_odd_frame;
     }
     int dispen = c->dispen_shifts[c->skew_dispen_index];
-    (void)dispen;
     uint16_t ma = c->address_counter;
     uint8_t data = c->data_byte;
+    uint8_t ma13 = c->data_ma13;
     uint8_t hc = c->horiz_counter;
     int fast = c->ula_clock_fast;
     for (uint32_t i = 0; i < n; i++, tick++) {
         int odd = tick & 1;
         if (fast || !odd) {
             data = CRTC_FETCH(c, ma, ra, odd);
+            ma13 = (ma >> 13) & 1;
             if (!odd) {
-                CRTC_TELETEXT(c, (ma & 0x2000) ? data : 0, (ma & 0x2000) ? dispen : 0);
+                CRTC_TELETEXT(c, ma13 ? data : 0, ma13 ? dispen : 0);
             }
             ma = (ma + 1) & 0x3fff;
         }
-        CRTC_RENDER(c, data, dispen, odd);
+        CRTC_RENDER(c, data, dispen, odd, ma13);
         if (fast || odd) {
             hc++;
         }
     }
     c->address_counter = ma;
     c->data_byte = data;
+    c->data_ma13 = ma13;
     c->horiz_counter = hc;
 }
 

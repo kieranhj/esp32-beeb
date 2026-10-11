@@ -23,6 +23,7 @@
 #include "cpu6502.h"
 #include "via.h"
 #include "crtc.h"
+#include "vstream.h"
 
 #define MACHINE_SWRAM_SLOTS 4   // slots 4..7
 
@@ -77,6 +78,7 @@ struct machine {
 
     struct crtc crtc;
     uint8_t ula_ctrl, ula_pal[16];
+    struct vstream *vs;        // video stream to the renderer, or NULL
 
     // Stubs that Phase 4 replaces with real models.
     uint8_t fdc_ctrl;

@@ -45,6 +45,14 @@ INLINE void machine_vsync(struct machine *m, int level);
 #define CRTC_FETCH(c, ma, ra, odd) machine_display_fetch(crtc_owner(c), ma, ra, odd)
 #define CRTC_VSYNC(c, level) machine_vsync(crtc_owner(c), level)
 INLINE struct machine *crtc_owner(struct crtc *c);
+// Video stream hooks: one word per tick, tagged events for the rest. With
+// no stream attached (m->vs NULL) they cost one compare.
+#define VS_PUT(c, w) do { struct machine *mm_ = crtc_owner(c); if (mm_->vs) vs_put(mm_->vs, (w)); } while (0)
+#define CRTC_RENDER(c, data, dispen, odd, ma13) \
+    VS_PUT(c, (uint16_t)(((data) << 8) | ((odd) ? VS_ODD : 0) | ((dispen) ? VS_DISPEN : 0) | ((ma13) ? VS_MA13 : 0)))
+#define CRTC_HSYNC(c, width) VS_PUT(c, VS_HSYNC | (width))
+#define CRTC_CURSOR(c) VS_PUT(c, VS_CURSOR)
+#define CRTC_RA(c, ra, isv) VS_PUT(c, VS_RA | (ra) | ((isv) ? 0x80 : 0))
 #include "crtc.c"
 
 // Profiling switch for the per-cycle step (bit 0: skip the CRTC, bit 1:
@@ -258,6 +266,9 @@ INLINE struct machine *crtc_owner(struct crtc *c)
 INLINE void machine_vsync(struct machine *m, int level)
 {
     via_set_ca1(&m->sysvia, level);
+    if (m->vs) {
+        vs_put(m->vs, VS_VSYNC | level);
+    }
 }
 
 // The RAM address the CRTC fetches for MA/RA (beebjit's video_read_data_byte
@@ -586,9 +597,15 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
     case 0xfe20:
         if (addr & 1) {
             m->ula_pal[val >> 4] = val & 0xf;
+            if (m->vs) {
+                vs_put(m->vs, VS_ULAPAL | val);
+            }
         } else {
             m->ula_ctrl = val;
             crtc_set_ula(&m->crtc, val);
+            if (m->vs) {
+                vs_put(m->vs, VS_ULACTRL | val);
+            }
         }
         break;
     case 0xfe24:
