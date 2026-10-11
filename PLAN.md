@@ -13,9 +13,10 @@ left to do, in order. Tick items off and delete phases as they finish.
 Phase 0 is done: the measured cost is 12 to 17 host clocks per emulated cycle
 for the CPU alone and 35 to 41 with a video-shaped per-cycle step, against a
 budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
-design stands. `main/cpu6502.c` is a documented-opcode NMOS 6502 with exact
+design stands. `main/cpu6502.c` is a 65C12 (with an NMOS mode) with exact
 bus sequencing that passes the Klaus Dormann tests on the host and the board;
-`main/main.c` is still the Phase 0 benchmark. Phase 1 is next.
+beebjit runs natively on Windows as the oracle; `main/main.c` is still the
+Phase 0 benchmark. Phase 1 continues with the Master memory map and VIAs.
 
 ## The budget
 
@@ -39,10 +40,12 @@ bus sequencing that passes the Klaus Dormann tests on the host and the board;
 
 ## Phase 1: the machine without a screen
 
-- [ ] 6502 complete: the remaining undocumented opcodes (the dispatch table
-      in `cpu6502.c` sends them to `op_undoc`), interrupt polling on the
-      penultimate cycle rather than at instruction boundaries, and the
-      Phase 0 benchmark replaced by the machine in `main/main.c`.
+- [x] 65C12 opcode map and bus quirks (see decisions, "the Master's CPU is
+      a 65C12"); Klaus Dormann's five tests pass via `sh host/build.sh`.
+- [ ] Interrupt polling on the penultimate cycle of each instruction rather
+      than at instruction boundaries (beebjit's `interp_poll_irq_now` points
+      are the reference), and the Phase 0 benchmark replaced by the machine
+      in `main/main.c`.
 - [ ] Master memory map: ROMSEL (0xFE30) with ANDY, ACCCON (0xFE34) with
       HAZEL, shadow (Y), VDU-driver shadow select (E/X), TST bit ignored.
       All paging as pointer-table updates, never copies.
@@ -51,11 +54,12 @@ bus sequencing that passes the Klaus Dormann tests on the host and the board;
       1 MHz bus stretch on VIA and other 1 MHz peripheral accesses.
 - [ ] Minimal 0xFE4x..0xFEFF decode so MOS boots: ACIA, serial ULA, 1770
       stubs returning idle, CMOS/RTC enough for MOS 3.20 not to complain.
-- [ ] Trace diff tool in `tools/`: beebjit with `BEEBJIT_DEBUG=1
-      BEEBJIT_PRINT=1 -mode interp` prints every instruction; our core
-      prints the same format over serial (or in a host build, see below);
-      the tool reports the first divergence. Target: identical streams for
-      the first million cycles of MOS 3.20 boot.
+- [ ] Trace diff tool in `tools/`: `out/beebjit-win/beebjit.exe -master
+      -mode interp -headless -fast -debug -print` (built by
+      `tools/build_beebjit_win.sh`) prints every instruction; our host build
+      prints the same line format; the tool reports the first divergence.
+      Target: identical streams for the first million cycles of MOS 3.20
+      boot. Decimal-mode N/Z are a known, accepted difference.
 - [ ] Host build: the core compiles with a desktop C compiler too (no ESP
       headers in `cpu6502.c`, `via.c`, `machine.c`), so trace diffs run on
       the PC in seconds instead of over a 115200 baud link.

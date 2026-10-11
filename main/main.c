@@ -71,7 +71,6 @@ static const struct variant variants[] = {
     {"iram ", cpu6502_reset_iram, cpu6502_run_iram},
     {"video", cpu6502_reset_video, cpu6502_run_video},
     {"flash", cpu6502_reset_flash, cpu6502_run_flash},
-    {"irmsw", cpu6502_reset_iramsw, cpu6502_run_iramsw},
     {"flshv", cpu6502_reset_flashv, cpu6502_run_flashv},
     {"irmft", cpu6502_reset_iramft, cpu6502_run_iramft},
 };
@@ -132,6 +131,7 @@ static void bench_task(void *arg)
         load_synth();
         memset(&cpu, 0, sizeof cpu);
         cpu.mem = phase0_ram;
+        cpu.cmos = 1;
         v->reset(&cpu);
         int64_t us = timed_run(v, &cpu, synth_cycles);
         report(v->name, "synth", synth_cycles, us);
@@ -139,6 +139,7 @@ static void bench_task(void *arg)
         load_klaus();
         memset(&cpu, 0, sizeof cpu);
         cpu.mem = phase0_ram;
+        cpu.cmos = 1;
         v->reset(&cpu);
         us = timed_run(v, &cpu, klaus_cycles);
         report(v->name, "klaus", klaus_cycles, us);
@@ -149,6 +150,7 @@ static void bench_task(void *arg)
     load_klaus();
     memset(&cpu, 0, sizeof cpu);
     cpu.mem = phase0_ram;
+    cpu.cmos = 1;
     cpu6502_reset_iram(&cpu);
     int64_t t0 = esp_timer_get_time();
     uint16_t last = 0xffff;

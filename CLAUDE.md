@@ -12,9 +12,9 @@ on its 368x448 AMOLED. Accuracy of CRTC/ULA tricks is the goal. It is not a
 port: beebjit is the reference and test oracle, not the engine. Phase 0
 (measure host clocks per emulated cycle on the real board) is done and the
 numbers are in `docs/decisions.md`; the cycle-stepped design stands. What
-exists: `main/cpu6502.c`, a documented-opcode NMOS 6502 with exact bus
-sequencing, and `main/main.c`, which is still the Phase 0 benchmark harness.
-Phase 1 is next.
+exists: `main/cpu6502.c`, a 65C12 (the Master's CPU; NMOS mode too) with
+exact bus sequencing, and `main/main.c`, which is still the Phase 0
+benchmark harness. Phase 1 is under way.
 
 The user is Kieran, a bitshifters member who wrote several of these demos and
 built the beebjit and b2 libretro cores in `../rg40xxv`. Assume deep BBC Micro
@@ -40,7 +40,9 @@ Host build of the core (no ESP-IDF needed) and the Klaus Dormann tests, from
 Git Bash. There is no gcc on this machine; `zig cc` (clang) is on PATH:
 
 ```sh
-sh host/build.sh        # builds host/klaus.exe, host/decimal.exe and runs both
+sh host/build.sh                 # builds host/cputest.exe, runs the five Klaus tests
+sh tools/build_beebjit_win.sh    # native beebjit.exe into out/beebjit-win/ (the oracle)
+out/beebjit-win/beebjit.exe -master -mode interp -headless -fast -debug -print     -commands "breakat 1000000;c;q" > trace.txt   # 1 M cycles of Master boot
 ```
 
 Board:

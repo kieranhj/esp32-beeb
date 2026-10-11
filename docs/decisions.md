@@ -78,6 +78,8 @@ compare/branch, stack and flag traffic). Host clocks per emulated 2 MHz cycle:
 | table build, core in flash instead of IRAM            | 11.9  | 16.8  | 7.2x     |
 | table + video tick, core (43 KB) in flash             | 35.4  | 41.2  | 2.9x     |
 | table build, dispatch table in flash rodata           | 11.9  | 16.8  | 7.2x     |
+| same core as a 65C12 (CMOS branches, later same day)  | 12.3  | 17.3  | 6.9x     |
+| 65C12 with the video tick                             | 36.3  | 41.1  | 2.9x     |
 
 The video tick (fetch a display byte, expand 8 pixels into a line buffer as
 two 32-bit words, advance a horizontal counter, count lines) costs 24 clocks
@@ -119,3 +121,46 @@ Correctness at this point: Klaus Dormann's 6502 functional test and the NMOS
 decimal test pass on the host build and on the board (96,090,063 cycles for
 the functional test). Cycle timing of each opcode is by construction, not yet
 verified; Phase 1 diffs it against beebjit.
+
+## 2026-10-11: the Master's CPU is a 65C12, and the core follows beebjit's quirks
+
+The first beebjit trace of MOS 3.20 uses TRB and STZ within a dozen
+instructions: the Master 128 has a 65SC12, not an NMOS 6502. The plan's
+"all 256 opcodes including undocumented ones" was a Model B item. The core
+now has a runtime `cmos` flag and two dispatch tables. CMOS: the full 65C02
+map minus the Rockwell bit instructions (which the 65SC12 lacks; they are
+one-cycle NOPs), read-read-write RMW, 6-cycle shifts on abs,X without a page
+crossing, the dummy-read address quirks, decimal mode one cycle longer, JMP
+(abs) without the page bug, D cleared on interrupt. The cycle-level bus
+sequences follow beebjit's `interp.c` 65C12 paths. NMOS keeps the documented
+opcodes only; the undocumented ones wait for a Model B profile.
+
+Tests, all run by `sh host/build.sh` in under two seconds: Klaus Dormann's
+6502 functional test (NMOS and CMOS), 65C02 extended opcodes test (the
+`65c02.bin` build without Rockwell/WDC ops), NMOS decimal test, 65C02 decimal
+test. All pass.
+
+One deliberate difference from beebjit: in decimal mode the 65C02 sets N and
+Z from the decimal result (and SBC adjusts the whole byte before the low
+nibble, which shows on non-BCD operands); beebjit applies the NMOS flag rules
+to the 65C12 as well. The Klaus 65C02 decimal test with every flag check on
+is hardware truth, so the core follows it. A trace diff against beebjit can
+therefore show N/Z differing right after a decimal ADC or SBC; MOS uses
+decimal mode in very few places (the RTC and number printing).
+
+## 2026-10-11: beebjit runs natively on Windows via zig cc
+
+There is no gcc, mingw or WSL on the development machine, but `zig cc` is on
+PATH and is a clang. `tools/build_beebjit_win.sh` builds a native beebjit.exe
+from `../rg40xxv/beebjit` into `out/beebjit-win/` with one stub for an
+assembly label beebjit declares `.globl` but never defines (GNU as lets that
+pass, clang's assembler does not). The trace is `-debug -print`, not the
+environment variables the plan named; `-master -mode interp -headless -fast`
+plus `-commands "breakat N;c;q"` gives N cycles of Master boot in beebjit's
+line format:
+
+```
+[ITRP] E366: STA $0D00      [A=40 X=00 Y=00 S=FD F=  I  1  ] [addr=0D00 val=FF]
+```
+
+The trace diff tool in Phase 1 prints that format from our core.

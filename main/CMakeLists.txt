@@ -4,7 +4,6 @@ idf_component_register(
         "cpu_iram.c"
         "cpu_video.c"
         "cpu_flash.c"
-        "cpu_iramsw.c"
         "cpu_flashv.c"
         "cpu_iramft.c"
     INCLUDE_DIRS "."

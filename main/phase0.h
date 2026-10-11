@@ -32,7 +32,6 @@ static inline __attribute__((always_inline)) void phase0_video_tick(struct cpu65
 DECLARE_VARIANT(iram)
 DECLARE_VARIANT(video)
 DECLARE_VARIANT(flash)
-DECLARE_VARIANT(iramsw)
 DECLARE_VARIANT(flashv)
 DECLARE_VARIANT(iramft)
 #endif

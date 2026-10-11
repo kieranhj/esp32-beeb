@@ -1,15 +1,15 @@
-// esp32-beeb: cycle-stepped NMOS 6502 core.
+// esp32-beeb: cycle-stepped 6502 / 65C12 core.
 //
 // Plain C, no ESP headers: this file and cpu6502.c compile on a desktop
 // compiler for trace diffs against beebjit.
 //
 // Every bus access is one emulated cycle and goes through one inline read or
-// write, which first runs the per-cycle hook (CPU6502_TICK). Phase 1 hangs
-// the CRTC/ULA/VIA step off that hook; Phase 0 uses it to measure the cost.
+// write, which first runs the per-cycle hook (CPU6502_TICK). The machine
+// hangs the CRTC/ULA/VIA step off that hook.
 //
-// Phase 0 scope: documented opcodes, exact per-cycle bus sequence for those
-// (dummy reads, page-crossing re-reads, RMW double writes), flat 64 KB RAM.
-// Undocumented opcodes trap to cpu6502_undoc(), which Phase 1 replaces.
+// cpu->cmos = 1 gives the 65C12 in the Master 128 (full opcode map, CMOS bus
+// quirks); 0 gives the NMOS 6502 with the documented opcodes only. Memory is
+// a flat 64 KB for now; the Master paging replaces that with page tables.
 
 #ifndef CPU6502_H
 #define CPU6502_H
@@ -21,6 +21,7 @@ struct cpu6502 {
     uint8_t a, x, y, s;
     // Flags kept unpacked. n holds bit 7 only (0 or 0x80), the rest are 0/1.
     uint8_t n, z, c, v, i, d;
+    uint8_t cmos;  // 1: 65C12 (Master), 0: NMOS 6502 (Model B)
     // Interrupt lines, sampled at instruction boundaries (Phase 1 moves the
     // sample point to the penultimate cycle of each instruction).
     uint8_t irq_line;

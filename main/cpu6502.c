@@ -1,10 +1,26 @@
-// esp32-beeb: cycle-stepped NMOS 6502 core. See cpu6502.h.
+// esp32-beeb: cycle-stepped 6502 / 65C12 core. See cpu6502.h.
 //
-// Structure: one big switch per opcode; every bus access is an inline rd() or
-// wr() that runs the per-cycle hook first. The addressing-mode helpers
-// reproduce the real chip's bus sequence, including the dummy accesses, so
-// that Phase 1 can hang cycle-exact peripherals off the hook without
-// restructuring anything here.
+// Structure: computed-goto dispatch per opcode; every bus access is an inline
+// rd() or wr() that runs the per-cycle hook first. The addressing-mode
+// helpers reproduce the real chip's bus sequence, including the dummy
+// accesses, so that Phase 1 can hang cycle-exact peripherals off the hook.
+//
+// cpu->cmos selects the 65C12 (BBC Master) or the NMOS 6502 (Model B). The
+// CMOS quirks follow beebjit's interp.c, which is the oracle:
+//   - read-modify-write does read, read, write (NMOS: read, write, write)
+//   - abs,X / abs,Y / (zp),Y reads that cross a page spend the extra cycle on
+//     a harmless re-read of the last instruction byte, not on the wrong page
+//   - abs,X / abs,Y writes without a page crossing put the final address on
+//     the bus for the dummy read; with a crossing the dummy is harmless
+//   - ASL/LSR/ROL/ROR abs,X take 6 cycles unless the page crosses; INC/DEC
+//     abs,X always take 7
+//   - decimal ADC/SBC take one extra cycle
+//   - JMP (abs) has no page-wrap bug and takes 6 cycles; JMP (abs,X) exists
+//   - BRK and interrupts clear D
+//   - the unused opcodes are NOPs of defined length and cycle count
+// Decimal-mode N and Z come from the decimal result on CMOS (the Klaus 65C02
+// test checks this); beebjit uses the NMOS rules for both parts, so a trace
+// diff can differ in N/Z right after a decimal ADC/SBC. See decisions.md.
 
 #include "cpu6502.h"
 
@@ -39,6 +55,13 @@ INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
 INLINE uint8_t fetch(struct cpu6502 *cpu)
 {
     return rd(cpu, cpu->pc++);
+}
+
+// A cycle the CMOS part spends re-reading the last instruction byte: it hits
+// nothing that cares.
+INLINE void idle(struct cpu6502 *cpu)
+{
+    (void)rd(cpu, cpu->pc - 1);
 }
 
 INLINE void push(struct cpu6502 *cpu, uint8_t v)
@@ -89,7 +112,7 @@ void CPU6502_FN(cpu6502_set_p)(struct cpu6502 *cpu, uint8_t p)
 }
 
 // ---- addressing modes: each returns the effective address having performed
-// exactly the bus cycles the real chip does before the data cycle. ----------
+// exactly the bus cycles the chip does before the data cycle. --------------
 
 INLINE uint16_t am_zp(struct cpu6502 *cpu)
 {
@@ -109,24 +132,36 @@ INLINE uint16_t am_abs(struct cpu6502 *cpu)
     return lo | (fetch(cpu) << 8);
 }
 
-// Indexed absolute for reads: the extra cycle happens only on page crossing,
-// and is a read from the un-carried address.
+// Indexed absolute for reads: the extra cycle happens only on page crossing.
 INLINE uint16_t am_absi_r(struct cpu6502 *cpu, uint8_t idx)
 {
     uint16_t base = am_abs(cpu);
     uint16_t ea = base + idx;
     if ((ea ^ base) & 0xff00) {
-        (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+        if (cpu->cmos) {
+            idle(cpu);
+        } else {
+            (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+        }
     }
     return ea;
 }
 
-// Indexed absolute for writes and RMW: the dummy read always happens.
+// Indexed absolute for writes: the dummy read always happens. NMOS reads the
+// un-carried address; CMOS reads the final address unless the page crossed.
 INLINE uint16_t am_absi_w(struct cpu6502 *cpu, uint8_t idx)
 {
     uint16_t base = am_abs(cpu);
     uint16_t ea = base + idx;
-    (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+    if (cpu->cmos) {
+        if ((ea ^ base) & 0xff00) {
+            idle(cpu);
+        } else {
+            (void)rd(cpu, ea);
+        }
+    } else {
+        (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+    }
     return ea;
 }
 
@@ -146,7 +181,11 @@ INLINE uint16_t am_izy_r(struct cpu6502 *cpu)
     uint16_t base = lo | (rd(cpu, (uint8_t)(zp + 1)) << 8);
     uint16_t ea = base + cpu->y;
     if ((ea ^ base) & 0xff00) {
-        (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+        if (cpu->cmos) {
+            idle(cpu);
+        } else {
+            (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+        }
     }
     return ea;
 }
@@ -157,8 +196,20 @@ INLINE uint16_t am_izy_w(struct cpu6502 *cpu)
     uint16_t lo = rd(cpu, zp);
     uint16_t base = lo | (rd(cpu, (uint8_t)(zp + 1)) << 8);
     uint16_t ea = base + cpu->y;
-    (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+    if (cpu->cmos) {
+        idle(cpu);
+    } else {
+        (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+    }
     return ea;
+}
+
+// CMOS only: (zp) with no index.
+INLINE uint16_t am_izp(struct cpu6502 *cpu)
+{
+    uint8_t zp = fetch(cpu);
+    uint16_t lo = rd(cpu, zp);
+    return lo | (rd(cpu, (uint8_t)(zp + 1)) << 8);
 }
 
 // ---- ALU -------------------------------------------------------------------
@@ -173,8 +224,11 @@ INLINE void op_adc(struct cpu6502 *cpu, uint8_t m)
         cpu->a = (uint8_t)sum;
         set_nz(cpu, cpu->a);
     } else {
-        // NMOS decimal: Z from the binary sum, N and V from the intermediate
-        // high nibble before the final +0x60 adjust.
+        // Decimal. V comes from the intermediate sum before the +0x60
+        // adjust on both parts. NMOS: Z from the binary sum, N from the
+        // intermediate. CMOS: N and Z from the final decimal result, and an
+        // extra cycle. (beebjit applies the NMOS flag rules to the 65C12
+        // too; the Klaus 65C02 test wants the CMOS rules, so that wins.)
         unsigned bin = a + m + cpu->c;
         int al = (a & 0x0f) + (m & 0x0f) + cpu->c;
         if (al >= 0x0a) {
@@ -182,14 +236,19 @@ INLINE void op_adc(struct cpu6502 *cpu, uint8_t m)
         }
         int r = (a & 0xf0) + (m & 0xf0) + al;
         int rs = (int8_t)(a & 0xf0) + (int8_t)(m & 0xf0) + al;
-        cpu->n = r & 0x80;
         cpu->v = (rs < -128) || (rs > 127);
+        cpu->n = r & 0x80;
         if (r >= 0xa0) {
             r += 0x60;
         }
         cpu->c = r >= 0x100;
-        cpu->z = ((bin & 0xff) == 0);
         cpu->a = (uint8_t)r;
+        if (cpu->cmos) {
+            idle(cpu);
+            set_nz(cpu, cpu->a);
+        } else {
+            cpu->z = ((bin & 0xff) == 0);
+        }
     }
 }
 
@@ -199,12 +258,27 @@ INLINE void op_sbc(struct cpu6502 *cpu, uint8_t m)
     unsigned borrow = cpu->c ^ 1;
     int bin = a - m - borrow;
     uint8_t res = (uint8_t)bin;
-    // Flags are always binary on NMOS SBC.
+    // Flags are binary in both modes (beebjit's rule for both parts).
     cpu->v = ((a ^ m) & (a ^ res) & 0x80) != 0;
     cpu->c = bin >= 0;
     set_nz(cpu, res);
     if (!cpu->d) {
         cpu->a = res;
+    } else if (cpu->cmos) {
+        // 65C02: adjust the whole byte first, then the low nibble, which
+        // matters for operands that are not valid BCD. N and Z come from
+        // the decimal result, and there is an extra cycle.
+        int al = (a & 0x0f) - (m & 0x0f) - borrow;
+        int r = bin;
+        if (r < 0) {
+            r -= 0x60;
+        }
+        if (al < 0) {
+            r -= 0x06;
+        }
+        cpu->a = (uint8_t)r;
+        idle(cpu);
+        set_nz(cpu, cpu->a);
     } else {
         int al = (a & 0x0f) - (m & 0x0f) - borrow;
         if (al < 0) {
@@ -265,14 +339,66 @@ INLINE uint8_t op_ror(struct cpu6502 *cpu, uint8_t m)
     return m;
 }
 
-// Read-modify-write: read, dummy write of the old value, write of the new.
+INLINE uint8_t op_inc(struct cpu6502 *cpu, uint8_t m)
+{
+    m++;
+    set_nz(cpu, m);
+    return m;
+}
+
+INLINE uint8_t op_dec(struct cpu6502 *cpu, uint8_t m)
+{
+    m--;
+    set_nz(cpu, m);
+    return m;
+}
+
+INLINE uint8_t op_tsb(struct cpu6502 *cpu, uint8_t m)
+{
+    cpu->z = ((cpu->a & m) == 0);
+    return m | cpu->a;
+}
+
+INLINE uint8_t op_trb(struct cpu6502 *cpu, uint8_t m)
+{
+    cpu->z = ((cpu->a & m) == 0);
+    return m & ~cpu->a;
+}
+
+// Read-modify-write data cycles. NMOS: read, write old, write new.
+// CMOS: read, read again, write new.
+INLINE void rmw_tail(struct cpu6502 *cpu, uint16_t ea, uint8_t m)
+{
+    if (cpu->cmos) {
+        (void)rd(cpu, ea);
+    } else {
+        wr(cpu, ea, m);
+    }
+}
+
 #define RMW(ea, op)                              \
     do {                                         \
         uint16_t ea_ = (ea);                     \
         uint8_t m_ = rd(cpu, ea_);               \
-        wr(cpu, ea_, m_);                        \
+        rmw_tail(cpu, ea_, m_);                  \
         wr(cpu, ea_, op(cpu, m_));               \
     } while (0)
+
+// abs,X read-modify-write. The shift/rotate group on CMOS takes 6 cycles
+// unless the page crosses; INC/DEC and all NMOS RMW always take 7.
+INLINE uint16_t am_absx_rmw(struct cpu6502 *cpu, int six_cycle)
+{
+    uint16_t base = am_abs(cpu);
+    uint16_t ea = base + cpu->x;
+    if (!cpu->cmos) {
+        (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
+    } else if ((ea ^ base) & 0xff00) {
+        idle(cpu);
+    } else if (!six_cycle) {
+        (void)rd(cpu, ea);
+    }
+    return ea;
+}
 
 INLINE void branch(struct cpu6502 *cpu, int taken)
 {
@@ -284,7 +410,11 @@ INLINE void branch(struct cpu6502 *cpu, int taken)
     uint16_t npc = old + off;
     (void)rd(cpu, old);  // dummy read of the next opcode
     if ((npc ^ old) & 0xff00) {
-        (void)rd(cpu, (old & 0xff00) | (npc & 0xff));
+        if (cpu->cmos) {
+            idle(cpu);
+        } else {
+            (void)rd(cpu, (old & 0xff00) | (npc & 0xff));
+        }
     }
     cpu->pc = npc;
 }
@@ -296,16 +426,11 @@ INLINE void interrupt(struct cpu6502 *cpu, uint16_t vec, int b)
     push(cpu, cpu->pc & 0xff);
     push(cpu, pack_p(cpu, b));
     cpu->i = 1;
+    if (cpu->cmos) {
+        cpu->d = 0;
+    }
     uint16_t lo = rd(cpu, vec);
     cpu->pc = lo | (rd(cpu, vec + 1) << 8);
-}
-
-// Undocumented opcode: Phase 1 implements these. For Phase 0 treat them as
-// one-byte NOPs so a stray byte does not derail a measurement.
-INLINE void cpu6502_undoc(struct cpu6502 *cpu, uint8_t op)
-{
-    (void)op;
-    (void)rd(cpu, cpu->pc);
 }
 
 void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
@@ -324,8 +449,8 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 {
     // Work on a local copy. A byte store through cpu->mem could alias any
     // field of *cpu_in, so with the pointer the compiler reloads every
-    // register after every bus write (measured: about 30 clocks per cycle on
-    // the ESP32-S3). A local whose address never escapes cannot be aliased by
+    // register after every bus write (measured: 6 clocks per cycle on the
+    // ESP32-S3). A local whose address never escapes cannot be aliased by
     // mem[], so its fields stay in machine registers.
     struct cpu6502 local = *cpu_in;
     struct cpu6502 *cpu = &local;
@@ -334,56 +459,60 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
     uint32_t start = cpu->cyc;
     uint32_t end = start + (uint32_t)(until - cpu->cycles);
 
-#ifdef CPU6502_USE_SWITCH
-#define OPC(h) case 0x##h:
-#define OPC_DEFAULT default:
-#define NEXT break
-#define DISPATCH_END }
-#else
-    // Computed-goto dispatch: one load and one indirect jump per opcode.
-    // GCC for Xtensa turned the equivalent switch into a compare tree, which
-    // Phase 0 measured as noticeably slower. Opcodes without a handler go to
-    // op_undoc; Phase 1 fills the table in. The table lives wherever
-    // CPU6502_TABLE_ATTR says (DRAM on the ESP32-S3).
-    static CPU6502_TABLE_ATTR void *const dispatch[256] = {
-        &&op_00, &&op_01, &&op_undoc, &&op_undoc, &&op_undoc, &&op_05, &&op_06, &&op_undoc,
-        &&op_08, &&op_09, &&op_0a, &&op_undoc, &&op_undoc, &&op_0d, &&op_0e, &&op_undoc,
-        &&op_10, &&op_11, &&op_undoc, &&op_undoc, &&op_undoc, &&op_15, &&op_16, &&op_undoc,
-        &&op_18, &&op_19, &&op_undoc, &&op_undoc, &&op_undoc, &&op_1d, &&op_1e, &&op_undoc,
-        &&op_20, &&op_21, &&op_undoc, &&op_undoc, &&op_24, &&op_25, &&op_26, &&op_undoc,
-        &&op_28, &&op_29, &&op_2a, &&op_undoc, &&op_2c, &&op_2d, &&op_2e, &&op_undoc,
-        &&op_30, &&op_31, &&op_undoc, &&op_undoc, &&op_undoc, &&op_35, &&op_36, &&op_undoc,
-        &&op_38, &&op_39, &&op_undoc, &&op_undoc, &&op_undoc, &&op_3d, &&op_3e, &&op_undoc,
-        &&op_40, &&op_41, &&op_undoc, &&op_undoc, &&op_undoc, &&op_45, &&op_46, &&op_undoc,
-        &&op_48, &&op_49, &&op_4a, &&op_undoc, &&op_4c, &&op_4d, &&op_4e, &&op_undoc,
-        &&op_50, &&op_51, &&op_undoc, &&op_undoc, &&op_undoc, &&op_55, &&op_56, &&op_undoc,
-        &&op_58, &&op_59, &&op_undoc, &&op_undoc, &&op_undoc, &&op_5d, &&op_5e, &&op_undoc,
-        &&op_60, &&op_61, &&op_undoc, &&op_undoc, &&op_undoc, &&op_65, &&op_66, &&op_undoc,
-        &&op_68, &&op_69, &&op_6a, &&op_undoc, &&op_6c, &&op_6d, &&op_6e, &&op_undoc,
-        &&op_70, &&op_71, &&op_undoc, &&op_undoc, &&op_undoc, &&op_75, &&op_76, &&op_undoc,
-        &&op_78, &&op_79, &&op_undoc, &&op_undoc, &&op_undoc, &&op_7d, &&op_7e, &&op_undoc,
-        &&op_undoc, &&op_81, &&op_undoc, &&op_undoc, &&op_84, &&op_85, &&op_86, &&op_undoc,
-        &&op_88, &&op_undoc, &&op_8a, &&op_undoc, &&op_8c, &&op_8d, &&op_8e, &&op_undoc,
-        &&op_90, &&op_91, &&op_undoc, &&op_undoc, &&op_94, &&op_95, &&op_96, &&op_undoc,
-        &&op_98, &&op_99, &&op_9a, &&op_undoc, &&op_undoc, &&op_9d, &&op_undoc, &&op_undoc,
-        &&op_a0, &&op_a1, &&op_a2, &&op_undoc, &&op_a4, &&op_a5, &&op_a6, &&op_undoc,
-        &&op_a8, &&op_a9, &&op_aa, &&op_undoc, &&op_ac, &&op_ad, &&op_ae, &&op_undoc,
-        &&op_b0, &&op_b1, &&op_undoc, &&op_undoc, &&op_b4, &&op_b5, &&op_b6, &&op_undoc,
-        &&op_b8, &&op_b9, &&op_ba, &&op_undoc, &&op_bc, &&op_bd, &&op_be, &&op_undoc,
-        &&op_c0, &&op_c1, &&op_undoc, &&op_undoc, &&op_c4, &&op_c5, &&op_c6, &&op_undoc,
-        &&op_c8, &&op_c9, &&op_ca, &&op_undoc, &&op_cc, &&op_cd, &&op_ce, &&op_undoc,
-        &&op_d0, &&op_d1, &&op_undoc, &&op_undoc, &&op_undoc, &&op_d5, &&op_d6, &&op_undoc,
-        &&op_d8, &&op_d9, &&op_undoc, &&op_undoc, &&op_undoc, &&op_dd, &&op_de, &&op_undoc,
-        &&op_e0, &&op_e1, &&op_undoc, &&op_undoc, &&op_e4, &&op_e5, &&op_e6, &&op_undoc,
-        &&op_e8, &&op_e9, &&op_ea, &&op_undoc, &&op_ec, &&op_ed, &&op_ee, &&op_undoc,
-        &&op_f0, &&op_f1, &&op_undoc, &&op_undoc, &&op_undoc, &&op_f5, &&op_f6, &&op_undoc,
-        &&op_f8, &&op_f9, &&op_undoc, &&op_undoc, &&op_undoc, &&op_fd, &&op_fe, &&op_undoc,
+    // Computed-goto dispatch: one load and one indirect jump per opcode. GCC
+    // for Xtensa turns the equivalent switch into a compare tree, which
+    // Phase 0 measured at 9 to 10 clocks per cycle slower. Tables live
+    // wherever CPU6502_TABLE_ATTR says (DRAM on the ESP32-S3).
+    //
+    // NMOS table: documented opcodes; the undocumented ones go to op_undoc
+    // until a Model B profile needs them. CMOS table: the full 65C12 map.
+#define T16(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) \
+    &&op_##a, &&op_##b, &&op_##c, &&op_##d, &&op_##e, &&op_##f, &&op_##g, &&op_##h, \
+    &&op_##i, &&op_##j, &&op_##k, &&op_##l, &&op_##m, &&op_##n, &&op_##o, &&op_##p,
+    static CPU6502_TABLE_ATTR void *const nmos_table[256] = {
+        T16(00, 01, undoc, undoc, undoc, 05, 06, undoc, 08, 09, 0a, undoc, undoc, 0d, 0e, undoc)
+        T16(10, 11, undoc, undoc, undoc, 15, 16, undoc, 18, 19, undoc, undoc, undoc, 1d, 1e, undoc)
+        T16(20, 21, undoc, undoc, 24, 25, 26, undoc, 28, 29, 2a, undoc, 2c, 2d, 2e, undoc)
+        T16(30, 31, undoc, undoc, undoc, 35, 36, undoc, 38, 39, undoc, undoc, undoc, 3d, 3e, undoc)
+        T16(40, 41, undoc, undoc, undoc, 45, 46, undoc, 48, 49, 4a, undoc, 4c, 4d, 4e, undoc)
+        T16(50, 51, undoc, undoc, undoc, 55, 56, undoc, 58, 59, undoc, undoc, undoc, 5d, 5e, undoc)
+        T16(60, 61, undoc, undoc, undoc, 65, 66, undoc, 68, 69, 6a, undoc, 6c, 6d, 6e, undoc)
+        T16(70, 71, undoc, undoc, undoc, 75, 76, undoc, 78, 79, undoc, undoc, undoc, 7d, 7e, undoc)
+        T16(undoc, 81, undoc, undoc, 84, 85, 86, undoc, 88, undoc, 8a, undoc, 8c, 8d, 8e, undoc)
+        T16(90, 91, undoc, undoc, 94, 95, 96, undoc, 98, 99, 9a, undoc, undoc, 9d, undoc, undoc)
+        T16(a0, a1, a2, undoc, a4, a5, a6, undoc, a8, a9, aa, undoc, ac, ad, ae, undoc)
+        T16(b0, b1, undoc, undoc, b4, b5, b6, undoc, b8, b9, ba, undoc, bc, bd, be, undoc)
+        T16(c0, c1, undoc, undoc, c4, c5, c6, undoc, c8, c9, ca, undoc, cc, cd, ce, undoc)
+        T16(d0, d1, undoc, undoc, undoc, d5, d6, undoc, d8, d9, undoc, undoc, undoc, dd, de, undoc)
+        T16(e0, e1, undoc, undoc, e4, e5, e6, undoc, e8, e9, ea, undoc, ec, ed, ee, undoc)
+        T16(f0, f1, undoc, undoc, undoc, f5, f6, undoc, f8, f9, undoc, undoc, undoc, fd, fe, undoc)
     };
+    // nop1: 1 byte 1 cycle. nop2: 2 bytes 2 cycles. nopzp/nopzpx: 2 bytes with
+    // a zero page read (3/4 cycles). nop8: 3 bytes 8 cycles. nopabs: 3 bytes
+    // with an absolute read (4 cycles).
+    static CPU6502_TABLE_ATTR void *const cmos_table[256] = {
+        T16(00, 01, nop2, nop1, 04, 05, 06, nop1, 08, 09, 0a, nop1, 0c, 0d, 0e, nop1)
+        T16(10, 11, 12, nop1, 14, 15, 16, nop1, 18, 19, 1a, nop1, 1c, 1d, 1e, nop1)
+        T16(20, 21, nop2, nop1, 24, 25, 26, nop1, 28, 29, 2a, nop1, 2c, 2d, 2e, nop1)
+        T16(30, 31, 32, nop1, 34, 35, 36, nop1, 38, 39, 3a, nop1, 3c, 3d, 3e, nop1)
+        T16(40, 41, nop2, nop1, nopzp, 45, 46, nop1, 48, 49, 4a, nop1, 4c, 4d, 4e, nop1)
+        T16(50, 51, 52, nop1, nopzpx, 55, 56, nop1, 58, 59, 5a, nop1, nop8, 5d, 5e, nop1)
+        T16(60, 61, nop2, nop1, 64, 65, 66, nop1, 68, 69, 6a, nop1, 6c, 6d, 6e, nop1)
+        T16(70, 71, 72, nop1, 74, 75, 76, nop1, 78, 79, 7a, nop1, 7c, 7d, 7e, nop1)
+        T16(80, 81, nop2, nop1, 84, 85, 86, nop1, 88, 89, 8a, nop1, 8c, 8d, 8e, nop1)
+        T16(90, 91, 92, nop1, 94, 95, 96, nop1, 98, 99, 9a, nop1, 9c, 9d, 9e, nop1)
+        T16(a0, a1, a2, nop1, a4, a5, a6, nop1, a8, a9, aa, nop1, ac, ad, ae, nop1)
+        T16(b0, b1, b2, nop1, b4, b5, b6, nop1, b8, b9, ba, nop1, bc, bd, be, nop1)
+        T16(c0, c1, nop2, nop1, c4, c5, c6, nop1, c8, c9, ca, nop1, cc, cd, ce, nop1)
+        T16(d0, d1, d2, nop1, nopzpx, d5, d6, nop1, d8, d9, da, nop1, nopabs, dd, de, nop1)
+        T16(e0, e1, nop2, nop1, e4, e5, e6, nop1, e8, e9, ea, nop1, ec, ed, ee, nop1)
+        T16(f0, f1, f2, nop1, nopzpx, f5, f6, nop1, f8, f9, fa, nop1, nopabs, fd, fe, nop1)
+    };
+#undef T16
+    void *const *dispatch = cpu->cmos ? cmos_table : nmos_table;
+
 #define OPC(h) op_##h:
-#define OPC_DEFAULT op_undoc:
 #define NEXT continue
-#define DISPATCH_END
-#endif
 
     while ((int32_t)(end - cpu->cyc) > 0) {
         // Interrupt lines sampled at the instruction boundary.
@@ -405,11 +534,8 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         uint16_t ea;
         uint8_t t;
 
-#ifdef CPU6502_USE_SWITCH
-        switch (op) {
-#else
         goto *dispatch[op];
-#endif
+
         // ---- loads ----
         OPC(a9) set_nz(cpu, cpu->a = fetch(cpu)); NEXT;
         OPC(a5) set_nz(cpu, cpu->a = rd(cpu, am_zp(cpu))); NEXT;
@@ -419,6 +545,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(b9) set_nz(cpu, cpu->a = rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(a1) set_nz(cpu, cpu->a = rd(cpu, am_izx(cpu))); NEXT;
         OPC(b1) set_nz(cpu, cpu->a = rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(b2) set_nz(cpu, cpu->a = rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(a2) set_nz(cpu, cpu->x = fetch(cpu)); NEXT;
         OPC(a6) set_nz(cpu, cpu->x = rd(cpu, am_zp(cpu))); NEXT;
@@ -440,6 +567,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(99) wr(cpu, am_absi_w(cpu, cpu->y), cpu->a); NEXT;
         OPC(81) wr(cpu, am_izx(cpu), cpu->a); NEXT;
         OPC(91) wr(cpu, am_izy_w(cpu), cpu->a); NEXT;
+        OPC(92) wr(cpu, am_izp(cpu), cpu->a); NEXT;
 
         OPC(86) wr(cpu, am_zp(cpu), cpu->x); NEXT;
         OPC(96) wr(cpu, am_zpi(cpu, cpu->y), cpu->x); NEXT;
@@ -448,6 +576,11 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(84) wr(cpu, am_zp(cpu), cpu->y); NEXT;
         OPC(94) wr(cpu, am_zpi(cpu, cpu->x), cpu->y); NEXT;
         OPC(8c) wr(cpu, am_abs(cpu), cpu->y); NEXT;
+
+        OPC(64) wr(cpu, am_zp(cpu), 0); NEXT;
+        OPC(74) wr(cpu, am_zpi(cpu, cpu->x), 0); NEXT;
+        OPC(9c) wr(cpu, am_abs(cpu), 0); NEXT;
+        OPC(9e) wr(cpu, am_absi_w(cpu, cpu->x), 0); NEXT;
 
         // ---- transfers ----
         OPC(aa) (void)rd(cpu, cpu->pc); set_nz(cpu, cpu->x = cpu->a); NEXT;
@@ -460,6 +593,8 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         // ---- stack ----
         OPC(48) (void)rd(cpu, cpu->pc); push(cpu, cpu->a); NEXT;
         OPC(08) (void)rd(cpu, cpu->pc); push(cpu, pack_p(cpu, 1)); NEXT;
+        OPC(da) (void)rd(cpu, cpu->pc); push(cpu, cpu->x); NEXT;
+        OPC(5a) (void)rd(cpu, cpu->pc); push(cpu, cpu->y); NEXT;
         OPC(68)
             (void)rd(cpu, cpu->pc);
             (void)rd(cpu, 0x100 | cpu->s);
@@ -469,6 +604,16 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             (void)rd(cpu, cpu->pc);
             (void)rd(cpu, 0x100 | cpu->s);
             unpack_p(cpu, pull(cpu));
+            NEXT;
+        OPC(fa)
+            (void)rd(cpu, cpu->pc);
+            (void)rd(cpu, 0x100 | cpu->s);
+            set_nz(cpu, cpu->x = pull(cpu));
+            NEXT;
+        OPC(7a)
+            (void)rd(cpu, cpu->pc);
+            (void)rd(cpu, 0x100 | cpu->s);
+            set_nz(cpu, cpu->y = pull(cpu));
             NEXT;
 
         // ---- ALU ----
@@ -480,6 +625,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(79) op_adc(cpu, rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(61) op_adc(cpu, rd(cpu, am_izx(cpu))); NEXT;
         OPC(71) op_adc(cpu, rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(72) op_adc(cpu, rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(e9) op_sbc(cpu, fetch(cpu)); NEXT;
         OPC(e5) op_sbc(cpu, rd(cpu, am_zp(cpu))); NEXT;
@@ -489,6 +635,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(f9) op_sbc(cpu, rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(e1) op_sbc(cpu, rd(cpu, am_izx(cpu))); NEXT;
         OPC(f1) op_sbc(cpu, rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(f2) op_sbc(cpu, rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(29) set_nz(cpu, cpu->a &= fetch(cpu)); NEXT;
         OPC(25) set_nz(cpu, cpu->a &= rd(cpu, am_zp(cpu))); NEXT;
@@ -498,6 +645,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(39) set_nz(cpu, cpu->a &= rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(21) set_nz(cpu, cpu->a &= rd(cpu, am_izx(cpu))); NEXT;
         OPC(31) set_nz(cpu, cpu->a &= rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(32) set_nz(cpu, cpu->a &= rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(09) set_nz(cpu, cpu->a |= fetch(cpu)); NEXT;
         OPC(05) set_nz(cpu, cpu->a |= rd(cpu, am_zp(cpu))); NEXT;
@@ -507,6 +655,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(19) set_nz(cpu, cpu->a |= rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(01) set_nz(cpu, cpu->a |= rd(cpu, am_izx(cpu))); NEXT;
         OPC(11) set_nz(cpu, cpu->a |= rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(12) set_nz(cpu, cpu->a |= rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(49) set_nz(cpu, cpu->a ^= fetch(cpu)); NEXT;
         OPC(45) set_nz(cpu, cpu->a ^= rd(cpu, am_zp(cpu))); NEXT;
@@ -516,6 +665,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(59) set_nz(cpu, cpu->a ^= rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(41) set_nz(cpu, cpu->a ^= rd(cpu, am_izx(cpu))); NEXT;
         OPC(51) set_nz(cpu, cpu->a ^= rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(52) set_nz(cpu, cpu->a ^= rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(c9) op_cmp(cpu, cpu->a, fetch(cpu)); NEXT;
         OPC(c5) op_cmp(cpu, cpu->a, rd(cpu, am_zp(cpu))); NEXT;
@@ -525,6 +675,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(d9) op_cmp(cpu, cpu->a, rd(cpu, am_absi_r(cpu, cpu->y))); NEXT;
         OPC(c1) op_cmp(cpu, cpu->a, rd(cpu, am_izx(cpu))); NEXT;
         OPC(d1) op_cmp(cpu, cpu->a, rd(cpu, am_izy_r(cpu))); NEXT;
+        OPC(d2) op_cmp(cpu, cpu->a, rd(cpu, am_izp(cpu))); NEXT;
 
         OPC(e0) op_cmp(cpu, cpu->x, fetch(cpu)); NEXT;
         OPC(e4) op_cmp(cpu, cpu->x, rd(cpu, am_zp(cpu))); NEXT;
@@ -535,47 +686,55 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 
         OPC(24) op_bit(cpu, rd(cpu, am_zp(cpu))); NEXT;
         OPC(2c) op_bit(cpu, rd(cpu, am_abs(cpu))); NEXT;
+        OPC(34) op_bit(cpu, rd(cpu, am_zpi(cpu, cpu->x))); NEXT;
+        OPC(3c) op_bit(cpu, rd(cpu, am_absi_r(cpu, cpu->x))); NEXT;
+        OPC(89) cpu->z = ((cpu->a & fetch(cpu)) == 0); NEXT;  // BIT imm: Z only
+
+        OPC(04) RMW(am_zp(cpu), op_tsb); NEXT;
+        OPC(0c) RMW(am_abs(cpu), op_tsb); NEXT;
+        OPC(14) RMW(am_zp(cpu), op_trb); NEXT;
+        OPC(1c) RMW(am_abs(cpu), op_trb); NEXT;
 
         // ---- shifts ----
         OPC(0a) (void)rd(cpu, cpu->pc); cpu->a = op_asl(cpu, cpu->a); NEXT;
         OPC(06) RMW(am_zp(cpu), op_asl); NEXT;
         OPC(16) RMW(am_zpi(cpu, cpu->x), op_asl); NEXT;
         OPC(0e) RMW(am_abs(cpu), op_asl); NEXT;
-        OPC(1e) RMW(am_absi_w(cpu, cpu->x), op_asl); NEXT;
+        OPC(1e) RMW(am_absx_rmw(cpu, 1), op_asl); NEXT;
 
         OPC(4a) (void)rd(cpu, cpu->pc); cpu->a = op_lsr(cpu, cpu->a); NEXT;
         OPC(46) RMW(am_zp(cpu), op_lsr); NEXT;
         OPC(56) RMW(am_zpi(cpu, cpu->x), op_lsr); NEXT;
         OPC(4e) RMW(am_abs(cpu), op_lsr); NEXT;
-        OPC(5e) RMW(am_absi_w(cpu, cpu->x), op_lsr); NEXT;
+        OPC(5e) RMW(am_absx_rmw(cpu, 1), op_lsr); NEXT;
 
         OPC(2a) (void)rd(cpu, cpu->pc); cpu->a = op_rol(cpu, cpu->a); NEXT;
         OPC(26) RMW(am_zp(cpu), op_rol); NEXT;
         OPC(36) RMW(am_zpi(cpu, cpu->x), op_rol); NEXT;
         OPC(2e) RMW(am_abs(cpu), op_rol); NEXT;
-        OPC(3e) RMW(am_absi_w(cpu, cpu->x), op_rol); NEXT;
+        OPC(3e) RMW(am_absx_rmw(cpu, 1), op_rol); NEXT;
 
         OPC(6a) (void)rd(cpu, cpu->pc); cpu->a = op_ror(cpu, cpu->a); NEXT;
         OPC(66) RMW(am_zp(cpu), op_ror); NEXT;
         OPC(76) RMW(am_zpi(cpu, cpu->x), op_ror); NEXT;
         OPC(6e) RMW(am_abs(cpu), op_ror); NEXT;
-        OPC(7e) RMW(am_absi_w(cpu, cpu->x), op_ror); NEXT;
+        OPC(7e) RMW(am_absx_rmw(cpu, 1), op_ror); NEXT;
 
         // ---- inc/dec ----
-#define op_inc(cpu, m) ((void)set_nz(cpu, (uint8_t)((m) + 1)), (uint8_t)((m) + 1))
-#define op_dec(cpu, m) ((void)set_nz(cpu, (uint8_t)((m) - 1)), (uint8_t)((m) - 1))
         OPC(e6) RMW(am_zp(cpu), op_inc); NEXT;
         OPC(f6) RMW(am_zpi(cpu, cpu->x), op_inc); NEXT;
         OPC(ee) RMW(am_abs(cpu), op_inc); NEXT;
-        OPC(fe) RMW(am_absi_w(cpu, cpu->x), op_inc); NEXT;
+        OPC(fe) RMW(am_absx_rmw(cpu, 0), op_inc); NEXT;
         OPC(c6) RMW(am_zp(cpu), op_dec); NEXT;
         OPC(d6) RMW(am_zpi(cpu, cpu->x), op_dec); NEXT;
         OPC(ce) RMW(am_abs(cpu), op_dec); NEXT;
-        OPC(de) RMW(am_absi_w(cpu, cpu->x), op_dec); NEXT;
+        OPC(de) RMW(am_absx_rmw(cpu, 0), op_dec); NEXT;
         OPC(e8) (void)rd(cpu, cpu->pc); set_nz(cpu, ++cpu->x); NEXT;
         OPC(ca) (void)rd(cpu, cpu->pc); set_nz(cpu, --cpu->x); NEXT;
         OPC(c8) (void)rd(cpu, cpu->pc); set_nz(cpu, ++cpu->y); NEXT;
         OPC(88) (void)rd(cpu, cpu->pc); set_nz(cpu, --cpu->y); NEXT;
+        OPC(1a) (void)rd(cpu, cpu->pc); set_nz(cpu, ++cpu->a); NEXT;
+        OPC(3a) (void)rd(cpu, cpu->pc); set_nz(cpu, --cpu->a); NEXT;
 
         // ---- flags ----
         OPC(18) (void)rd(cpu, cpu->pc); cpu->c = 0; NEXT;
@@ -596,14 +755,28 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(b0) branch(cpu, cpu->c); NEXT;
         OPC(d0) branch(cpu, !cpu->z); NEXT;
         OPC(f0) branch(cpu, cpu->z); NEXT;
+        OPC(80) branch(cpu, 1); NEXT;
 
         // ---- jumps and calls ----
         OPC(4c) cpu->pc = am_abs(cpu); NEXT;
         OPC(6c)
             ea = am_abs(cpu);
+            if (cpu->cmos) {
+                idle(cpu);
+                t = rd(cpu, ea);
+                cpu->pc = t | (rd(cpu, ea + 1) << 8);
+            } else {
+                t = rd(cpu, ea);
+                // NMOS bug: the high byte read does not carry into the page.
+                cpu->pc = t | (rd(cpu, (ea & 0xff00) | ((ea + 1) & 0xff)) << 8);
+            }
+            NEXT;
+        OPC(7c)
+            ea = am_abs(cpu);
+            idle(cpu);
+            ea += cpu->x;
             t = rd(cpu, ea);
-            // NMOS bug: the high byte read does not carry into the page.
-            cpu->pc = t | (rd(cpu, (ea & 0xff00) | ((ea + 1) & 0xff)) << 8);
+            cpu->pc = t | (rd(cpu, ea + 1) << 8);
             NEXT;
         OPC(20)
             t = fetch(cpu);
@@ -632,11 +805,24 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             interrupt(cpu, 0xfffe, 1);
             NEXT;
 
-        OPC_DEFAULT
-            cpu6502_undoc(cpu, op);
+        // ---- CMOS defined NOPs ----
+        OPC(nop1) NEXT;
+        OPC(nop2) (void)fetch(cpu); NEXT;
+        OPC(nopzp) (void)rd(cpu, am_zp(cpu)); NEXT;
+        OPC(nopzpx) (void)rd(cpu, am_zpi(cpu, cpu->x)); NEXT;
+        OPC(nopabs) (void)rd(cpu, am_abs(cpu)); NEXT;
+        OPC(nop8)
+            (void)am_abs(cpu);
+            for (t = 0; t < 5; t++) {
+                idle(cpu);
+            }
             NEXT;
-        DISPATCH_END
+
+        // Undocumented NMOS opcode: not implemented until a Model B profile
+        // needs them. Treated as a one-byte, two-cycle NOP.
+        OPC(undoc) (void)rd(cpu, cpu->pc); NEXT;
     }
+
     uint32_t ran = cpu->cyc - start;
     cpu->cycles += ran;
     *cpu_in = local;
