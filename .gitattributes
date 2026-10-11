@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.rom binary
+*.ssd binary
+*.dsd binary
