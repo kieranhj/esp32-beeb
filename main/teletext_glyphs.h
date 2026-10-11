@@ -6,7 +6,7 @@
 
 /* Normal Character Set */
 
-static uint8_t teletext_characters[96*60]={
+static const uint8_t teletext_characters[96*60]={
   // 0x20 ' '
   0,0,0,0,0,0,
   0,0,0,0,0,0,

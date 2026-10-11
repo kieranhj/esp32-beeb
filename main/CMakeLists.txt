@@ -2,7 +2,10 @@ idf_component_register(
     SRCS
         "main.c"
         "machine_esp.c"
+        "video_esp.c"
+        "display.c"
     INCLUDE_DIRS "."
+    PRIV_REQUIRES esp_timer esp_lcd esp_driver_i2c esp_driver_spi esp_driver_gpio
     EMBED_FILES
         "../roms/mos3.20/mos.rom"
         "../roms/mos3.20/dfs.rom"
@@ -18,3 +21,6 @@ idf_component_register(
 # -O2 is the baseline. Revisit per-file (-Os for cold code) once there is a
 # measured reason: on the ESP32-S3 instruction-cache behaviour can beat raw -O2.
 target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+# The video stream ring: 16 K words is 32 KB of internal SRAM and 0.4 of a
+# frame of slack between the machine and the renderer.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE VS_RING=16384)

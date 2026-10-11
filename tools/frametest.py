@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 BJ = os.path.join("out", "beebjit-win", "beebjit.exe")
-FRAME = os.path.join("host", "frame.exe")
+FRAME = os.environ.get("FRAME_EXE", os.path.join("host", "frame.exe"))
 OUT = os.path.join("out", "frametest")
 
 # BBC keyboard matrix (row, col) and the beebjit key code, from beebjit's

@@ -10,6 +10,11 @@
 //          VS_ODD     the second half of a 1 MHz character
 //          VS_DISPEN  display enable after the R8 skew
 //          VS_MA13    MA13 was set for this fetch (teletext addressing)
+//          VS_PAIR    both ticks of a 1 MHz character in one word (VS_ODD
+//                     clear): the CRTC's fast path emits these when no
+//                     event falls between the two ticks, which halves the
+//                     stream in modes 4 to 7. A consumer treats it as the
+//                     even tick followed by the odd one.
 //   event: bit 7 set. bits 0-6 type, bits 8-15 payload:
 //          VS_HSYNC   payload = hsync pulse width in ticks
 //          VS_VSYNC   payload = new level (1 raise, 0 lower)
@@ -36,6 +41,7 @@ enum {
     VS_ODD = 0x01,
     VS_DISPEN = 0x02,
     VS_MA13 = 0x04,
+    VS_PAIR = 0x08,
 };
 
 enum {

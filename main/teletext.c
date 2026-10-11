@@ -17,10 +17,46 @@ static const uint8_t k_stretch_data[] = {
     9, 255, 0, 0,  9, 85, 10, 170, 10, 170, 11, 85, 11, 255, 0, 0,
 };
 
+// The three glyph sets, 96 characters of 20 rows by 16 pixels. On the host
+// each pixel is a byte of coverage (0..255) for beebjit's anti-aliased look;
+// on the board (RENDER_INDEXED) each row is 16 bits, which keeps the sets
+// in 11 KB of internal RAM instead of 92 KB.
+#ifdef RENDER_INDEXED
+#define GLYPH_STRIDE 40
+#else
+#define GLYPH_STRIDE 320
+#endif
+#define GLYPH_SET_BYTES (96 * GLYPH_STRIDE)
+
 static int s_generated;
-static TELETEXT_DATA_ATTR uint8_t s_glyphs[96 * 16 * 20];
-static TELETEXT_DATA_ATTR uint8_t s_gfx[96 * 16 * 20];
-static TELETEXT_DATA_ATTR uint8_t s_sep_gfx[96 * 16 * 20];
+#ifdef RENDER_INDEXED
+// A glyph row byte (pixel 0 in bit 7) as two words of 0xff/0x00 pixel
+// masks, so eight pixels are two selects between fg and bg.
+static uint32_t s_expand[256][2];
+#endif
+static TELETEXT_DATA_ATTR uint8_t s_glyphs[GLYPH_SET_BYTES];
+static TELETEXT_DATA_ATTR uint8_t s_gfx[GLYPH_SET_BYTES];
+static TELETEXT_DATA_ATTR uint8_t s_sep_gfx[GLYPH_SET_BYTES];
+
+// Stores a generated 16 by 20 coverage glyph into a set.
+static void store_glyph(uint8_t *set, uint32_t index, const uint8_t *px)
+{
+    uint8_t *dst = set + index * GLYPH_STRIDE;
+#ifdef RENDER_INDEXED
+    for (uint32_t y = 0; y < 20; y++) {
+        uint32_t bits = 0;
+        for (uint32_t x = 0; x < 16; x++) {
+            if (px[y * 16 + x] >= 128) {
+                bits |= 0x8000u >> x;
+            }
+        }
+        dst[y * 2] = (uint8_t)bits;
+        dst[y * 2 + 1] = (uint8_t)(bits >> 8);
+    }
+#else
+    memcpy(dst, px, 320);
+#endif
+}
 
 static void draw_block(uint8_t *glyph, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
@@ -81,18 +117,34 @@ void teletext_generate(void)
         return;
     }
     s_generated = 1;
+#ifdef RENDER_INDEXED
+    for (uint32_t b = 0; b < 256; b++) {
+        uint32_t m0 = 0, m1 = 0;
+        for (uint32_t i = 0; i < 4; i++) {
+            if (b & (0x80u >> i)) {
+                m0 |= 0xffu << (8 * i);
+            }
+            if (b & (0x08u >> i)) {
+                m1 |= 0xffu << (8 * i);
+            }
+        }
+        s_expand[b][0] = m0;
+        s_expand[b][1] = m1;
+    }
+#endif
     for (uint32_t i = 0; i < 96; i++) {
-        uint8_t doubled[12 * 20], pretty[12 * 20];
+        uint8_t doubled[12 * 20], pretty[12 * 20], wide[16 * 20];
         double_up(doubled, &teletext_characters[i * 60]);
         smooth_diagonals(pretty, doubled);
-        stretch_12_to_16(&s_glyphs[i * 320], pretty);
+        stretch_12_to_16(wide, pretty);
+        store_glyph(s_glyphs, i, wide);
     }
     // 0x40 - 0x5F in graphics modes use the character glyph.
-    memcpy(&s_gfx[(0x40 - 0x20) * 320], &s_glyphs[(0x40 - 0x20) * 320], 0x20 * 320);
-    memcpy(&s_sep_gfx[(0x40 - 0x20) * 320], &s_glyphs[(0x40 - 0x20) * 320], 0x20 * 320);
+    memcpy(&s_gfx[(0x40 - 0x20) * GLYPH_STRIDE], &s_glyphs[(0x40 - 0x20) * GLYPH_STRIDE], 0x20 * GLYPH_STRIDE);
+    memcpy(&s_sep_gfx[(0x40 - 0x20) * GLYPH_STRIDE], &s_glyphs[(0x40 - 0x20) * GLYPH_STRIDE], 0x20 * GLYPH_STRIDE);
     // The graphics glyphs, on a 2x3 grid.
     for (uint32_t i = 0; i < 0x40; i++) {
-        uint8_t gfx[6 * 10], sep[6 * 10], doubled[12 * 20];
+        uint8_t gfx[6 * 10], sep[6 * 10], doubled[12 * 20], wide[16 * 20];
         memset(gfx, 0, sizeof gfx);
         memset(sep, 0, sizeof sep);
         if (i & 0x01) { draw_block(gfx, 0, 0, 3, 3); draw_block(sep, 1, 0, 2, 2); }
@@ -103,13 +155,15 @@ void teletext_generate(void)
         if (i & 0x20) { draw_block(gfx, 3, 7, 3, 3); draw_block(sep, 4, 7, 2, 2); }
         uint32_t index = i + ((i >= 0x20) ? 0x20 : 0);
         double_up(doubled, gfx);
-        stretch_12_to_16(&s_gfx[index * 320], doubled);
+        stretch_12_to_16(wide, doubled);
+        store_glyph(s_gfx, index, wide);
         double_up(doubled, sep);
-        stretch_12_to_16(&s_sep_gfx[index * 320], doubled);
+        stretch_12_to_16(wide, doubled);
+        store_glyph(s_sep_gfx, index, wide);
     }
 }
 
-static inline void set_active_characters(struct teletext *t)
+static inline RENDER_FN void set_active_characters(struct teletext *t)
 {
     if (t->is_graphics_active) {
         t->active_characters = t->is_separated_active ? s_sep_gfx : s_gfx;
@@ -118,7 +172,31 @@ static inline void set_active_characters(struct teletext *t)
     }
 }
 
-static inline void reset_scanline_state(struct teletext *t)
+#ifdef RENDER_INDEXED
+#define GLYPH_ROW_BYTES 2
+#else
+#define GLYPH_ROW_BYTES 16
+#endif
+
+// Which glyph rows this scanline shows, for a normal and a double height
+// character, two rasters each (beebjit's teletext_render arithmetic).
+static inline RENDER_FN void update_row_offsets(struct teletext *t)
+{
+    uint32_t line = t->scanline * 2;
+    if (!t->is_isv && t->crtc_ra0) {
+        line++;   // rounded
+    }
+    t->row_off[0][0] = line * GLYPH_ROW_BYTES;
+    if (t->is_isv) {
+        line++;
+    }
+    t->row_off[0][1] = line * GLYPH_ROW_BYTES;
+    line = t->scanline + (t->second_character_row_of_double ? 10 : 0);
+    t->row_off[1][0] = line * GLYPH_ROW_BYTES;
+    t->row_off[1][1] = line * GLYPH_ROW_BYTES;
+}
+
+static inline RENDER_FN void reset_scanline_state(struct teletext *t)
 {
     t->is_graphics_active = 0;
     t->is_separated_active = 0;
@@ -132,7 +210,7 @@ static inline void reset_scanline_state(struct teletext *t)
     set_active_characters(t);
 }
 
-static inline void advance_scanline(struct teletext *t)
+static inline RENDER_FN void advance_scanline(struct teletext *t)
 {
     t->scanline++;
     if (t->scanline == 10) {
@@ -144,15 +222,17 @@ static inline void advance_scanline(struct teletext *t)
         }
     }
     t->had_double_active_this_scanline = 0;
+    update_row_offsets(t);
 }
 
-static inline void new_frame_started(struct teletext *t)
+static inline RENDER_FN void new_frame_started(struct teletext *t)
 {
     t->scanline = 0;
     t->second_character_row_of_double = 0;
     // The flash counter is 6 bits on the silicon.
     t->flash_count = (t->flash_count + 1) & 63;
     t->flash_visible_this_frame = (t->flash_count >= 16);
+    update_row_offsets(t);
 }
 
 void teletext_init(struct teletext *t)
@@ -160,18 +240,26 @@ void teletext_init(struct teletext *t)
     teletext_generate();
     memset(t, 0, sizeof *t);
     for (uint32_t i = 0; i < 8; i++) {
+#ifdef RENDER_INDEXED
+        t->palette[i] = (render_px)i;
+#else
+        // One unit per channel so PX_BLEND's multiply is per channel.
         uint32_t c = 0;
         if (i & 1) c |= 0x010000;
         if (i & 2) c |= 0x000100;
         if (i & 4) c |= 0x000001;
         t->palette[i] = c;
+#endif
     }
-    t->black = 0xff000000;
+    t->black = PX_BLACK;
+    t->render_character = s_glyphs;
+    t->row_glyph = t->row_glyph2 = s_glyphs;
+    t->row_blank = 1;
     reset_scanline_state(t);
     new_frame_started(t);
 }
 
-static inline void handle_control(struct teletext *t, uint8_t c)
+static inline RENDER_FN __attribute__((always_inline)) void handle_control(struct teletext *t, uint8_t c)
 {
     switch (c) {
     case 0x01: case 0x02: case 0x03: case 0x04: case 0x05: case 0x06: case 0x07:
@@ -209,13 +297,13 @@ static inline void handle_control(struct teletext *t, uint8_t c)
     set_active_characters(t);
 }
 
-static inline void do_data_byte(struct teletext *t, uint8_t data)
+static inline RENDER_FN __attribute__((always_inline)) void do_data_byte(struct teletext *t, uint8_t data)
 {
     int is_hold_graphics = t->is_hold_graphics;
     t->render_fg_color = t->fg_color;
     data &= 0x7f;
     if (data >= 0x20) {
-        const uint8_t *ch = t->active_characters + 320 * (data - 0x20);
+        const uint8_t *ch = t->active_characters + GLYPH_STRIDE * (data - 0x20);
         t->render_character = ch;
         if (t->is_graphics_active) {
             if (data & 0x20) {
@@ -240,42 +328,64 @@ static inline void do_data_byte(struct teletext *t, uint8_t data)
     }
 }
 
-void teletext_data(struct teletext *t, uint8_t data, int is_dispen)
+TT_API __attribute__((always_inline)) void teletext_data(struct teletext *t, uint8_t data, int is_dispen, int decode)
 {
-    uint8_t queue_data = t->data_pipeline[0];
-    int pipelined_dispen = t->dispen_pipeline[0];
+    uint32_t dp = t->data_pipe;
+    uint32_t ep = t->dispen_pipe;
+    uint8_t queue_data = (uint8_t)dp;
+    uint32_t pipelined_dispen = ep & 1;
 
+    t->idle_calls = (data | (uint32_t)is_dispen) ? 0 : t->idle_calls + 1;
     // IC37/IC36: bit 6 forced in the pipelined byte while DISPEN is low, so
     // off-screen bytes cannot act as control codes.
     if (!is_dispen) {
-        t->data_pipeline[2] |= 0x40;
+        dp |= 0x400000;
     }
-    do_data_byte(t, queue_data);
-    t->data_pipeline[0] = t->data_pipeline[1];
-    t->data_pipeline[1] = t->data_pipeline[2];
-    t->data_pipeline[2] = data;
+    if (decode) {
+        do_data_byte(t, queue_data);
+    }
+    t->data_pipe = (dp >> 8) | ((uint32_t)data << 16);
 
     // End of scanline on LOSE (DISPEN) low for at least 2 cycles.
-    if (pipelined_dispen == 0 && t->dispen_pipeline[1] == 0 && t->curr_dispen == 1) {
+    if ((ep & 7) == 4) {
         reset_scanline_state(t);
         advance_scanline(t);
     }
-    t->curr_dispen = pipelined_dispen;
-    t->dispen_pipeline[0] = t->dispen_pipeline[1];
-    t->dispen_pipeline[1] = is_dispen;
+    t->dispen_pipe = ((ep >> 1) & 1) | ((uint32_t)(is_dispen != 0) << 1) | (pipelined_dispen << 2);
 }
 
-void teletext_render(struct teletext *t, int is_odd_tick, uint32_t *out, uint32_t *next_out)
+// Eight pixels of a glyph row: the left or right half of its 16.
+static inline RENDER_FN void glyph_half(const uint8_t *row, int right_half,
+                                        render_px *out, render_px fg, render_px bg)
+{
+#ifdef RENDER_INDEXED
+    // Row bytes: [1] holds pixels 0-7, [0] pixels 8-15, pixel 0 in bit 7.
+    // out is 4-byte aligned (line buffers, multiples of 4).
+    uint32_t b = row[right_half ? 0 : 1];
+    uint32_t fgx = fg * 0x01010101u;
+    uint32_t bgx = bg * 0x01010101u;
+    uint32_t m0 = s_expand[b][0];
+    uint32_t m1 = s_expand[b][1];
+    ((uint32_t *)out)[0] = (m0 & fgx) | (~m0 & bgx);
+    ((uint32_t *)out)[1] = (m1 & fgx) | (~m1 & bgx);
+#else
+    const uint8_t *src = row + (right_half ? 8 : 0);
+    for (int i = 0; i < 8; i++) {
+        uint32_t v = src[i];
+        out[i] = PX_BLEND(v, fg, bg);
+    }
+#endif
+}
+
+// Everything about the character that both ticks share, decided on the
+// even tick (teletext_data runs before it and nothing changes in between).
+static inline RENDER_FN void teletext_prepare_character(struct teletext *t, int two_rasters)
 {
     const uint8_t *src = t->render_character;
-    uint32_t fg = t->render_fg_color;
-    uint32_t bg = t->bg_color;
-
-    if (!t->curr_dispen) {
-        for (int i = 0; i < 8; i++) {
-            if (out) out[i] = t->black;
-            if (next_out) next_out[i] = t->black;
-        }
+    t->row_fg = t->render_fg_color;
+    t->row_bg = t->bg_color;
+    t->row_blank = !(t->dispen_pipe & 4);
+    if (t->row_blank) {
         return;
     }
     if ((t->flash_active && !t->flash_visible_this_frame) ||
@@ -285,49 +395,91 @@ void teletext_render(struct teletext *t, int is_odd_tick, uint32_t *out, uint32_
     if (t->is_concealed) {
         src = s_glyphs;
     }
-    uint32_t line = t->scanline;
-    if (!t->double_active) {
-        line *= 2;
-    } else if (t->second_character_row_of_double) {
-        line += 10;
+    const uint32_t *off = t->row_off[t->double_active ? 1 : 0];
+    uint32_t first = off[0];
+    if (!two_rasters && t->is_isv && t->crtc_ra0 && !t->double_active) {
+        first += GLYPH_ROW_BYTES;   // single raster: rounded even when interlaced
     }
-    int rounded = 0;
-    if (!t->is_isv && t->crtc_ra0 && !t->double_active) {
-        rounded = 1;
-    }
-    if (next_out == 0 && t->crtc_ra0 && !t->double_active) {
-        rounded = 1;
-    }
-    if (rounded) {
-        line++;
-    }
-    src += line * 16;
-    if (is_odd_tick) {
-        src += 8;
-    }
-    for (int i = 0; i < 8; i++) {
-        uint32_t v = src[i];
-        out[i] = (v * fg + (255 - v) * bg) | 0xff000000;
-    }
-    if (!next_out) {
+    t->row_glyph = src + first;
+    t->row_glyph2 = src + off[1];
+}
+
+// Both ticks of a character at once, two rasters each (the run loop's
+// mode 7 path); the same pixels as two teletext_render calls.
+TT_API void teletext_render_pair(struct teletext *t, render_px *out, render_px *next_out, int want_next)
+{
+    teletext_prepare_character(t, 1);
+#ifdef RENDER_INDEXED
+    uint32_t *o = (uint32_t *)out;
+    uint32_t *o2 = (uint32_t *)next_out;
+    if (t->row_blank) {
+        o[0] = o[1] = o[2] = o[3] = 0;
+        if (want_next) {
+            o2[0] = o2[1] = o2[2] = o2[3] = 0;
+        }
         return;
     }
-    if (t->is_isv && !t->double_active) {
-        src += 16;
+    uint32_t fgx = t->row_fg * 0x01010101u;
+    uint32_t bgx = t->row_bg * 0x01010101u;
+    const uint8_t *g = t->row_glyph;
+    const uint32_t *m;
+    m = s_expand[g[1]];  o[0] = (m[0] & fgx) | (~m[0] & bgx);  o[1] = (m[1] & fgx) | (~m[1] & bgx);
+    m = s_expand[g[0]];  o[2] = (m[0] & fgx) | (~m[0] & bgx);  o[3] = (m[1] & fgx) | (~m[1] & bgx);
+    if (want_next) {
+        const uint8_t *g2 = t->row_glyph2;
+        m = s_expand[g2[1]]; o2[0] = (m[0] & fgx) | (~m[0] & bgx); o2[1] = (m[1] & fgx) | (~m[1] & bgx);
+        m = s_expand[g2[0]]; o2[2] = (m[0] & fgx) | (~m[0] & bgx); o2[3] = (m[1] & fgx) | (~m[1] & bgx);
     }
-    for (int i = 0; i < 8; i++) {
-        uint32_t v = src[i];
-        next_out[i] = (v * fg + (255 - v) * bg) | 0xff000000;
+#else
+    if (t->row_blank) {
+        for (int i = 0; i < 16; i++) {
+            out[i] = t->black;
+            if (want_next) next_out[i] = t->black;
+        }
+        return;
+    }
+    glyph_half(t->row_glyph, 0, out, t->row_fg, t->row_bg);
+    glyph_half(t->row_glyph, 1, out + 8, t->row_fg, t->row_bg);
+    if (want_next) {
+        glyph_half(t->row_glyph2, 0, next_out, t->row_fg, t->row_bg);
+        glyph_half(t->row_glyph2, 1, next_out + 8, t->row_fg, t->row_bg);
+    }
+#endif
+}
+
+TT_API void teletext_render(struct teletext *t, int is_odd_tick, render_px *out, render_px *next_out)
+{
+    if (!is_odd_tick) {
+        teletext_prepare_character(t, next_out != 0);
+    }
+    if (t->row_blank) {
+#ifdef RENDER_INDEXED
+        ((uint32_t *)out)[0] = ((uint32_t *)out)[1] = 0;
+        if (next_out) {
+            ((uint32_t *)next_out)[0] = ((uint32_t *)next_out)[1] = 0;
+        }
+#else
+        for (int i = 0; i < 8; i++) {
+            out[i] = t->black;
+            if (next_out) next_out[i] = t->black;
+        }
+#endif
+        return;
+    }
+    glyph_half(t->row_glyph, is_odd_tick, out, t->row_fg, t->row_bg);
+    if (next_out) {
+        glyph_half(t->row_glyph2, is_odd_tick, next_out, t->row_fg, t->row_bg);
     }
 }
 
-void teletext_ra_isv_changed(struct teletext *t, uint8_t ra, int is_isv)
+TT_API void teletext_ra_isv_changed(struct teletext *t, uint8_t ra, int is_isv)
 {
     t->crtc_ra0 = ra & 1;
     t->is_isv = is_isv;
+    update_row_offsets(t);
 }
 
-void teletext_vsync_changed(struct teletext *t, int value)
+TT_API void teletext_vsync_changed(struct teletext *t, int value)
 {
     (void)value;
     new_frame_started(t);

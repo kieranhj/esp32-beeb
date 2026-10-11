@@ -68,7 +68,23 @@ host/frame.exe roms/mos3.20 2000000 out/f.bin --key <cycle> <row> <col> <down> -
 768x640 canvas, and can press keys at exact cycles, poke RAM, print CRTC
 counters and beam positions (`--crtc`, with `FRAME_DEBUG=1`) and write a
 trace (`--trace`). `tools/frametest.py` drives both emulators through the
-keyboard matrix; its cases are the regression set for video changes.
+keyboard matrix; its cases are the regression set for video changes. Build
+it a second time with `-DRENDER_INDEXED` (the board's pixel type) as
+`host/frame_idx.exe` and run the bitmap cases with
+`FRAME_EXE='host\frame_idx.exe'`: they must still be identical; mode 7
+differs only in beebjit's anti-aliased glyph edges.
+
+On the board (`idf.py -p COM3 flash`, then `python tools/capture.py 45 COM3`):
+boot prints BENCH lines (the renderer and panel path timed over synthetic
+MODE 2 and MODE 7 streams with core 1 idle), then every 5 s a PANEL line
+(rows scaled, time waiting for a band buffer, time queueing bands) and a
+STATS line (core 1 clocks per emulated cycle, how far behind real time,
+frames and bands sent, stream overruns, core 0 render load and ns per
+stream word). Build with `-DBEEB_MEASURE` (add to `target_compile_options`
+in `main/CMakeLists.txt`) to get the first 15 s split into no stream /
+stream dropped / rendered unsent, which is how the costs in decisions.md
+were separated. Five seconds after boot a BASIC line drawer is typed in so
+there is motion to look at.
 
 Board:
 

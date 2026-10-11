@@ -377,9 +377,21 @@ CRTC_INLINE uint32_t crtc_fast_ticks(const struct crtc *c, uint32_t tick)
     return l ? (2 * l - (tick & 1)) : 0;
 }
 
+// A run of renders may batch its stream writes (machine.c does).
+#ifndef CRTC_RUN_BEGIN
+#define CRTC_RUN_BEGIN(c) ((void)0)
+#define CRTC_RUN_RENDER(c, data, dispen, odd, ma13) CRTC_RENDER(c, data, dispen, odd, ma13)
+#define CRTC_RUN_RENDER_PAIR(c, data, dispen, ma13) do { \
+        CRTC_RENDER(c, data, dispen, 0, ma13); \
+        CRTC_RENDER(c, data, dispen, 1, ma13); \
+    } while (0)
+#define CRTC_RUN_END(c) ((void)0)
+#endif
+
 // The fast path: `n` ticks that only fetch, render and count.
 CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
 {
+    CRTC_RUN_BEGIN(c);
     uint8_t ra = c->scanline_counter;
     if (c->is_isv) {
         ra |= c->is_odd_frame;
@@ -389,22 +401,42 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
     uint8_t data = c->data_byte;
     uint8_t ma13 = c->data_ma13;
     uint8_t hc = c->horiz_counter;
-    int fast = c->ula_clock_fast;
-    for (uint32_t i = 0; i < n; i++, tick++) {
-        int odd = tick & 1;
-        if (fast || !odd) {
+    if (c->ula_clock_fast) {
+        for (uint32_t i = 0; i < n; i++, tick++) {
+            int odd = tick & 1;
             data = CRTC_FETCH(c, ma, ra, odd);
             ma13 = (ma >> 13) & 1;
             if (!odd) {
                 CRTC_TELETEXT(c, ma13 ? data : 0, ma13 ? dispen : 0);
             }
             ma = (ma + 1) & 0x3fff;
-        }
-        CRTC_RENDER(c, data, dispen, odd, ma13);
-        if (fast || odd) {
+            CRTC_RUN_RENDER(c, data, dispen, odd, ma13);
             hc++;
         }
+    } else {
+        // 1 MHz: the even tick fetches, the odd one counts. Both ticks of a
+        // character inside the run go out as one pair word.
+        for (uint32_t i = 0; i < n; i++, tick++) {
+            if (!(tick & 1)) {
+                data = CRTC_FETCH(c, ma, ra, 0);
+                ma13 = (ma >> 13) & 1;
+                CRTC_TELETEXT(c, ma13 ? data : 0, ma13 ? dispen : 0);
+                ma = (ma + 1) & 0x3fff;
+                if (i + 1 < n) {
+                    CRTC_RUN_RENDER_PAIR(c, data, dispen, ma13);
+                    i++;
+                    tick++;
+                    hc++;
+                    continue;
+                }
+                CRTC_RUN_RENDER(c, data, dispen, 0, ma13);
+            } else {
+                CRTC_RUN_RENDER(c, data, dispen, 1, ma13);
+                hc++;
+            }
+        }
     }
+    CRTC_RUN_END(c);
     c->address_counter = ma;
     c->data_byte = data;
     c->data_ma13 = ma13;

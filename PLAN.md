@@ -22,8 +22,13 @@ and `main/teletext.c` turn the stream into pixels. On the host the
 instruction trace matches beebjit cycle for cycle through 10 M cycles of
 boot and through typed MODE changes, and ten frame comparisons (mode 7 boot,
 MODE 0 to 6, line drawing, VDU 19) are pixel identical. On the board the
-machine runs at 95 clocks per cycle at the BASIC prompt (`main/main.c` is
-still a benchmark harness, nothing is displayed). Next: Phase 3, the panel.
+picture is on the panel: the machine on core 1 paced to real time, the
+renderer and scaler on core 0, at about 80% of core 0 in bitmap modes and
+at the limit in mode 7. The panel orientation (mirror bits, V2 gap axis)
+has not been seen by a person yet: boot it and read the mode 7 banner, then
+fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
+`main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
+Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
 
 ## The budget
 
@@ -98,19 +103,38 @@ still a benchmark harness, nothing is displayed). Next: Phase 3, the panel.
 
 ## Phase 3: presentation
 
-- [ ] Panel bring-up copied from `esp32-fluidbox/fluidbox/main/display.c`:
-      CO5300 over QSPI, V2 detection, band DMA with two internal buffers.
-- [ ] Rotation to landscape: the panel is 368 wide by 448 tall; the picture
-      is 448 by 336 landscape, so bands are emitted as columns of the
-      portrait panel. Work out the cheapest transposed write once in Phase 3
-      and keep it.
-- [ ] Scaler: 640 to 448 horizontal is a 10:7 pattern, 256 to 336 vertical
-      is 16:21. Both are fixed repeat/drop tables, no filtering. Colour
-      border fills the rest.
-- [ ] 50 Hz pacing: the machine runs until vsync, hands the frame over, and
-      core 0 presents it at the next panel refresh. Measure end-to-end
-      latency and drift.
-- [ ] Brightness control and a frame-time overlay toggle for tuning.
+- [x] Panel bring-up (`main/display.c`): CO5300 over QSPI at 80 MHz, V2
+      detection by probing the touch controller, 16-row bands from two DMA
+      buffers in internal SRAM. The esp_lcd panel io was dropped: it polls
+      every command and drains the DMA queue first, so a band could not be
+      queued behind the one in flight. The SPI master driver is used
+      directly and a band is two queued transactions.
+- [x] Rotation: the panel's own row/column exchange (MADCTL), so bands are
+      landscape rows and no transpose is needed. Mirror bits and the V2 gap
+      axis are defines in `display.h` and `display.c`; they have not been
+      seen on the panel yet (see Status).
+- [x] Scaler (`main/video_esp.c`): 640 to 448 keeps 7 pixels in 10, 256
+      scanlines to 336 rows doubles 5 in 16 (teletext's second raster
+      supplies the doubled row), straight from the renderer's raster line
+      into the band buffer. No frame buffer; a band goes out when the beam
+      leaves it, rows the beam never reaches are black.
+- [x] 50 Hz pacing: core 1 runs the machine to wall clock in slices of at
+      most a frame, 2 ms ahead then sleeps; core 0 drains the stream. The
+      panel trails the emulated beam by one band (about 1 ms). Drift is
+      nil by construction (the machine is slaved to the timer); the
+      measured costs are in `docs/decisions.md`.
+- [x] Brightness control (`display_set_brightness`).
+- [ ] Frame-time overlay toggle: needs an input (Phase 5); the serial
+      STATS line serves for tuning until then.
+- [ ] Mode 7 is at the limit of core 0 (about 85% rendering plus 15% panel
+      path) and drops frames at the BASIC prompt; bitmap modes run at about
+      80%. Levers, in order: a continuation write (0x3C) to halve the
+      transactions per band, a two-pixel lookup in the row scaler, a
+      character-row teletext renderer.
+- [ ] Core 1 runs at 106 clocks per cycle at the prompt with the stream on
+      (96 without), 118 to 128 while BASIC draws lines: the display write
+      window syncs the machine on every screen write. Over budget for
+      heavy screen writers; the sync needs to get cheaper or rarer.
 
 ## Phase 4: disc and sound
 

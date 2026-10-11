@@ -54,7 +54,7 @@ static void trace_line(struct cpu6502 *cpu, int kind)
 static struct machine machine;
 static struct vstream stream;
 static struct render render;
-static uint32_t canvas[RENDER_WIDTH * RENDER_HEIGHT];
+static render_px canvas[RENDER_WIDTH * RENDER_HEIGHT];
 
 // Debug: hsyncs per field and the beam position at each vsync raise.
 static int debug_fields;
@@ -64,10 +64,20 @@ static unsigned long long stream_ticks;
 static void consume(struct render *r, struct vstream *vs)
 {
     while (vs_available(vs) > 0) {
-        uint16_t w = vs_get(vs);
+        uint16_t w = vs->ring[vs->tail & (VS_RING - 1)];
         if (!(w & VS_EVENT)) {
-            stream_ticks++;
-        } else if (getenv("FRAME_DEBUG") && ((w & 0xff) == VS_ULACTRL)) {
+            // A run of ticks goes through the renderer's fast path, as on
+            // the board, so the frame tests cover it.
+            int n = 0;
+            while (n < vs_available(vs) && !(vs->ring[(vs->tail + n) & (VS_RING - 1)] & VS_EVENT)) {
+                n++;
+            }
+            stream_ticks += n;
+            render_consume_n(r, vs, n);
+            continue;
+        }
+        vs->tail++;
+        if (getenv("FRAME_DEBUG") && ((w & 0xff) == VS_ULACTRL)) {
             fprintf(stderr, "stream tick %llu: ULACTRL %02x (teletext=%d)\n", stream_ticks, w >> 8, r->is_teletext);
         }
         if ((w & VS_EVENT) && (w & 0xff) == VS_HSYNC) {
@@ -208,12 +218,22 @@ int main(int argc, char **argv)
     // Flush the peripherals to the exact cycle and render what that produced.
     machine_sync(m, m->cpu.cyc);
     consume(&render, &stream);
+    render_flush(&render);
 
     FILE *f = fopen(argv[3], "wb");
     if (!f) { perror(argv[3]); return 2; }
     uint32_t hdr[2] = {RENDER_WIDTH, RENDER_HEIGHT};
     fwrite(hdr, 4, 2, f);
+#ifdef RENDER_INDEXED
+    // The board's pixel type; expand so the same diff tools apply.
+    for (uint32_t i = 0; i < RENDER_WIDTH * RENDER_HEIGHT; i++) {
+        uint32_t p = canvas[i];
+        uint32_t argb = 0xff000000u | ((p & 1) * 0xff0000u) | ((p & 2) ? 0xff00u : 0) | ((p & 4) ? 0xffu : 0);
+        fwrite(&argb, 4, 1, f);
+    }
+#else
     fwrite(canvas, 4, RENDER_WIDTH * RENDER_HEIGHT, f);
+#endif
     fclose(f);
     if (trace_file) {
         fclose(trace_file);

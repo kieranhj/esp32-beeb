@@ -53,6 +53,27 @@ INLINE struct machine *crtc_owner(struct crtc *c);
 #define CRTC_HSYNC(c, width) VS_PUT(c, VS_EV(VS_HSYNC, (width)))
 #define CRTC_CURSOR(c) VS_PUT(c, VS_EV(VS_CURSOR, 0))
 #define CRTC_RA(c, ra, isv) VS_PUT(c, VS_EV(VS_RA, (ra) | ((isv) ? 0x80 : 0)))
+// The CRTC fast path keeps the ring head in a register for the run.
+#define CRTC_RUN_BEGIN(c) \
+    struct vstream *vs_ = crtc_owner(c)->vs; \
+    uint32_t vh_ = vs_ ? vs_->head : 0
+// odd and ma13 are 0 or 1 here, dispen any value; the flag bits are laid
+// out so they assemble with shifts and ors alone.
+#define CRTC_RUN_RENDER(c, data, dispen, odd, ma13) do { \
+        if (vs_) { \
+            vs_->ring[vh_ & (VS_RING - 1)] = (uint16_t)(((data) << 8) | (odd) | \
+                                                        ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2)); \
+            vh_++; \
+        } \
+    } while (0)
+#define CRTC_RUN_RENDER_PAIR(c, data, dispen, ma13) do { \
+        if (vs_) { \
+            vs_->ring[vh_ & (VS_RING - 1)] = (uint16_t)(((data) << 8) | VS_PAIR | \
+                                                        ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2)); \
+            vh_++; \
+        } \
+    } while (0)
+#define CRTC_RUN_END(c) do { if (vs_) vs_->head = vh_; } while (0)
 #include "crtc.c"
 
 // Profiling switch for the per-cycle step (bit 0: skip the CRTC, bit 1:

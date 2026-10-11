@@ -334,3 +334,70 @@ data. The renderer and teletext code are ports and the CRTC, VIA and 65C12
 quirks are restated from beebjit, so if this emulator is ever published it
 is GPLv3, or those parts get a clean-room rewrite. Nothing here can be
 published anyway while it ships the ROMs and discs.
+
+## 2026-10-12: Phase 3, the picture on the panel
+
+Shape: the CRTC stream crosses to core 0 through a 32 KB ring; a render
+task there runs the beebjit-model renderer with 3-bit pixels (`pixel.h`,
+`RENDER_INDEXED`) into two raster line buffers and, at each hsync, scales
+the raster into the current band buffer (16 panel rows, 14 KB, two of them
+in DMA-capable SRAM). The panel is rotated by its own MADCTL, so a band is
+a run of landscape rows and a frame is 23 queued bands. There is no frame
+buffer anywhere; the panel trails the beam by a band.
+
+Numbers (240 MHz host clocks; a stream word is one 2 MHz tick, or one
+character in 1 MHz modes):
+
+- Core 1, the machine: 96 clocks per cycle at the BASIC prompt with no
+  stream, 106 with it (the stream store is batched per CRTC run), 118 to
+  128 while a BASIC program draws lines in mode 2. The latter is over
+  budget: each screen write inside the display window syncs the CRTC.
+- Core 0, the renderer alone, synthetic streams: 72 clocks per word in
+  mode 2 (64 words a line take the fast path, 2 the slow), 186 per
+  character word in mode 7, 170 per word down the slow path.
+- Core 0, the panel path: 2.2 K clocks to scale a 448 pixel row (4.9 per
+  pixel), 37 us of SPI driver time to queue a band, 400 us for the band
+  to go out at 80 MHz quad (the link is busy 46% of a frame).
+- Core 0 in real time: 80 to 84% busy with the mode 2 line drawer, 99 to
+  100% at the mode 7 prompt (84% rendering, 16% panel), where it drops
+  frames. The ring laps the renderer when it is behind and the renderer
+  resyncs to the newest half ring.
+
+What it took to get there, each one measured on the board:
+
+- Internal RAM is the constraint, not flash or speed. The first link
+  overflowed by 140 KB. The fixes: teletext glyph sets as one bit per
+  pixel (11 KB, not 92), one expansion table per clock rather than per
+  mode (6 KB, not 24), the stream ring halved, IDF's FreeRTOS, heap, ring
+  buffer and flash code moved out of IRAM (`sdkconfig.defaults`). 90% of
+  the 334 KB IRAM+DRAM segment is used; 72 KB of heap is left at run time.
+- The renderer's per-word path costs about 170 clocks on this core (the
+  windowed ABI, struct traffic, load-use stalls), too slow for 2 M words a
+  second. Runs of plain ticks inside the window, and outside it, go
+  through loops with everything hoisted (`render_consume_n`); the frame
+  tests run through the same loops on the host, so they stay beebjit
+  identical.
+- The CRTC emits one word per character in 1 MHz modes (`VS_PAIR`): halves
+  the stream for modes 4 to 7 and the core 1 cost of it; the renderer
+  treats a pair as the even tick then the odd one, and the pixel results
+  are identical.
+- The teletext pipeline packs into two words; in bitmap modes it is at a
+  fixed point after two calls and the calls are skipped (provably the same
+  state); the decode of bytes is skipped unless teletext is being
+  rendered, which beebjit does not do, and which only differs in the
+  scanline a mode change to teletext lands on.
+- The second raster of a scanline is only rendered for the 5 in 16
+  scanlines the panel doubles (`RENDER_LINE2_WANTED`); the canvas on the
+  host always wants it.
+- esp_lcd's SPI panel io cannot queue a band while one is in flight (it
+  polls every command, draining the queue first): the measured band flush
+  waited a whole transfer. `display.c` talks to the SPI master driver
+  directly: a register write is opcode 0x02 with the register in the
+  24-bit address, pixels are 0x32 00 2C 00 then four-line data, both as
+  queued transactions, the column window set once at init.
+- Code placement: the renderer's per-tick path in IRAM made no measurable
+  difference (it was never instruction fetch); it stays there because the
+  budget is tight enough that a cache miss on a hot line would show.
+
+Still owed: a person looking at the panel. The mirror bits and which axis
+the V2's 16 pixel gap lands on after rotation are guesses until then.
