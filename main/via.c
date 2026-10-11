@@ -81,13 +81,12 @@ VIA_API void via_tick(struct via *via)
         if (via->t1c == 0xffff) {
             if (via->t1_armed) {
                 via_raise(via, VIA_INT_T1);
+                via->pb7 ^= 1;
+                if (!(via->acr & 0x40)) {
+                    via->t1_armed = 0;
+                }
             }
-            via->pb7 ^= 1;
-            if (via->acr & 0x40) {
-                via->t1_reload = 1;
-            } else {
-                via->t1_armed = 0;
-            }
+            via->t1_reload = 1;
         }
     }
     // T2: does not count in pulse-counting mode (PB6 pulses, none here).
@@ -97,6 +96,24 @@ VIA_API void via_tick(struct via *via)
             via->t2_armed = 0;
             via_raise(via, VIA_INT_T2);
         }
+    }
+}
+
+VIA_API uint32_t via_ticks_to_event(const struct via *via)
+{
+    uint32_t t1 = via->t1_reload ? 1 : (uint32_t)via->t1c + 1;
+    uint32_t t2 = 0xffffffffu;
+    if (via->t2_armed && !(via->acr & 0x20)) {
+        t2 = (uint32_t)via->t2c + 1;
+    }
+    return t1 < t2 ? t1 : t2;
+}
+
+VIA_API void via_advance(struct via *via, uint32_t k)
+{
+    via->t1c -= k;
+    if (!(via->acr & 0x20)) {
+        via->t2c -= k;  // an unarmed T2 just wraps
     }
 }
 

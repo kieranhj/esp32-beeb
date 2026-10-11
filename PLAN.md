@@ -27,9 +27,10 @@ measurement, then the pixel side of Phase 2.
 ## The budget
 
 - 6502 at 2 MHz, host at 240 MHz: **120 host clocks per emulated cycle**.
-  Measured in Phase 0: 12 to 17 for the CPU, about 24 more for a video-shaped
-  per-cycle step. Target spend from here: 20 CPU, 40 CRTC/ULA, 15 VIAs, the
-  rest margin. Re-measure in Phase 3 with core 0 driving the panel.
+  Measured with the whole machine at the BASIC prompt: 95 (core 32, CRTC 37,
+  VIAs 8, catch-up and I/O paths 18); see decisions "event-driven catch-up".
+  Re-measure in Phase 3 with core 0 driving the panel, and with a demo
+  running rather than the MOS idle loop.
 - Core 1 runs the machine. Core 0 scales, drives the panel, mixes audio, reads
   touch and IMU. Lines cross between them through a scanline ring buffer.
 - Hot data in internal SRAM only: 64 KB Master RAM (main, shadow, ANDY,
@@ -41,8 +42,9 @@ measurement, then the pixel side of Phase 2.
   (the hot set fits the shared 32 KB icache), but core 0 will compete for the
   same caches once the panel runs. Keep the hot working set small.
 - Hot state in locals inside the run loop, computed-goto dispatch, 32-bit
-  cycle counter: the three things Phase 0 measured as mattering. Details in
-  `docs/decisions.md`.
+  cycle counter, no call per cycle (the core counts, the machine catches up
+  at events), peripherals advanced by subtraction between events: what the
+  measurements found to matter. Details in `docs/decisions.md`.
 
 ## Phase 1: the machine without a screen
 
@@ -59,9 +61,10 @@ measurement, then the pixel side of Phase 2.
 - [x] Trace diff: `host/trace.exe` and `tools/tracediff.py`; see CLAUDE.md
       for the command. Matches beebjit for 1.44 M cycles of boot.
 - [x] Host build of the machine (`host/trace.c` includes `machine.c`).
-- [ ] The Phase 0 benchmark replaced by the machine in `main/main.c`, with
-      the ROM set in flash and the RAM arrays placed in internal SRAM;
-      re-measure clocks per cycle with the machine running MOS.
+- [x] The machine in `main/main.c` with the ROM set in flash, RAM in
+      internal SRAM (sideways RAM in PSRAM for now), measured at 95 clocks
+      per cycle. `main.c` is still a benchmark harness with profile masks
+      (`machine_profile_skip`) and MACHINE_STATS counters.
 - [ ] Keyboard input path (keys[] matrix is wired, nothing feeds it) and the
       CMOS write side so *CONFIGURE sticks; both can wait for Phase 5.
 

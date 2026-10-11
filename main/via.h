@@ -3,10 +3,11 @@
 // Plain C, no ESP headers. The model follows beebjit's via.c, restated for a
 // per-tick stepper instead of beebjit's timer events:
 //   - T1 and T2 count down once per 1 MHz tick; an interrupt fires when the
-//     counter passes from 0 to 0xFFFF. T1 in continuous mode reloads from the
-//     latch on the tick after that, so its period is latch + 2. T1 one-shot
-//     and T2 keep counting after firing and do not fire again until the high
-//     counter byte is written.
+//     counter passes from 0 to 0xFFFF. T1 reloads from the latch on the tick
+//     after that in both modes (beebjit's readback cycles with period
+//     latch + 2 in one-shot mode too); one-shot only fires and toggles PB7
+//     once until the high counter byte is written. T2 keeps counting after
+//     firing and does not fire again until its high byte is written.
 //   - A write to T1CH or T2CH loads latch + 1 and the next tick brings it to
 //     the latch value, which is what beebjit reads back (the write happens
 //     mid 1 MHz cycle, the first decrement at the boundary that ends it).
@@ -55,7 +56,12 @@ struct via {
 };
 
 VIA_API void via_reset(struct via *via);
-VIA_API void via_tick(struct via *via);  // one 1 MHz tick
+VIA_API void via_tick(struct via *via);  // one 1 MHz tick, exact
+// Bulk stepping: the number of ticks until the next tick that does more
+// than decrement (T1 underflow or reload, armed T2 underflow), at least 1;
+// and a plain advance of k ticks, valid for k < via_ticks_to_event().
+VIA_API uint32_t via_ticks_to_event(const struct via *via);
+VIA_API void via_advance(struct via *via, uint32_t k);
 VIA_API uint8_t via_read(struct via *via, uint8_t reg);
 VIA_API void via_write(struct via *via, uint8_t reg, uint8_t val);
 VIA_API void via_set_ca1(struct via *via, int level);

@@ -38,6 +38,9 @@
 #ifndef CPU6502_SYNC
 #define CPU6502_SYNC(cpu) ((void)0)
 #endif
+#ifndef CPU6502_SYNC_WRITE
+#define CPU6502_SYNC_WRITE(cpu) CPU6502_SYNC(cpu)
+#endif
 #ifndef CPU6502_IO_RD
 #define CPU6502_IO_RD(cpu, addr) (cycle(cpu), (uint8_t)0xff)
 #endif
@@ -77,9 +80,10 @@ INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
     uint8_t *p = cpu->wr_tab[addr >> 8];
     if (__builtin_expect(p != 0, 1)) {
         cycle(cpu);
-        if (addr < 0x8000) {
-            // Display RAM: let the CRTC fetch this cycle before the store.
-            CPU6502_SYNC(cpu);
+        if (addr >= cpu->wlo && addr <= cpu->whi) {
+            // Display RAM the CRTC is about to fetch: let it fetch this
+            // cycle before the store.
+            CPU6502_SYNC_WRITE(cpu);
         }
         p[addr & 0xff] = v;
         return;
@@ -516,6 +520,10 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->irq_hist = 0;
     cpu->i_poll = 1;
     cpu->no_poll = 0;
+    cpu->sync_due = 0;
+    cpu->last_sync = 0;
+    cpu->wlo = 0;
+    cpu->whi = 0xffff;
     cpu->rd_tab = cpu->rd_tabs[0];
     cpu->wr_tab = cpu->wr_tabs[0];
     cpu->pc = vec[0xfc] | (vec[0xfd] << 8);
@@ -592,7 +600,14 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 #define NEXT continue
 
     while ((int32_t)(end - cpu->cyc) > 0) {
-        CPU6502_SYNC(cpu);
+        if ((int32_t)(cpu->cyc - cpu->sync_due) >= 0) {
+            CPU6502_SYNC(cpu);
+        } else {
+            uint32_t n = cpu->cyc - cpu->last_sync;
+            uint32_t fill = cpu->irq_line ? 0xffffffffu : 0;
+            cpu->irq_hist = (n >= 16) ? fill : ((cpu->irq_hist << n) | (fill & ((1u << n) - 1)));
+            cpu->last_sync = cpu->cyc;
+        }
         // Interrupt decision for the instruction that just finished: bit 2
         // of the history is the line two cycles before its end.
         if (cpu->nmi_pending) {

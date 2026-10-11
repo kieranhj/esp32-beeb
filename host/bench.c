@@ -1,4 +1,5 @@
 // Host benchmark: runs the Master for N cycles with no trace, prints speed.
+#define MACHINE_STATS 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -26,5 +27,12 @@ int main(int argc, char **argv)
     double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     printf("%llu cycles in %.2f s: %.1f M cycles/s, %.1fx realtime\n",
            (unsigned long long)m->cpu.cycles, s, m->cpu.cycles / s / 1e6, m->cpu.cycles / s / 2e6);
+    printf("STATS calls=%u chunks=%u crtc_fast=%u crtc_slow=%u\n",
+           m->stat_calls, m->stat_chunks, m->crtc.stat_fast, m->crtc.stat_slow);
+    printf("STATS sync_boundary=%u io_rd=%u writes=%u\n",
+           m->stat_sync_boundary, m->stat_sync_io, m->stat_sync_write);
+    printf("STATS writes=%u due_hist:", m->stat_sync_write);
+    for (int i = 0; i < 17; i++) printf(" %u", m->stat_due_hist[i]);
+    putchar(10);
     return 0;
 }

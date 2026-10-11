@@ -41,6 +41,15 @@ struct cpu6502 {
     uint8_t nmi_pending;
     uint32_t irq_hist;
     uint8_t i_poll, no_poll;
+    // Cycle count at which the machine next has an event that can change
+    // the IRQ line or needs exact ordering; until then the instruction
+    // boundary needs no catch-up and the history is just the current level
+    // repeated for the cycles since the last catch-up (last_sync).
+    uint32_t sync_due, last_sync;
+    // Writes to addresses in [wlo, whi] need a catch-up first: that is the
+    // display memory the CRTC will fetch before sync_due. The machine sets
+    // it; 0..0xFFFF means every RAM write syncs.
+    uint16_t wlo, whi;
     uint32_t cyc;      // running cycle counter used by the hot loop, wraps
     uint64_t cycles;   // total, updated when cpu6502_run returns
     // Memory page tables, see above. rd_tab/wr_tab are the set in use.

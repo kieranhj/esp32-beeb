@@ -248,3 +248,44 @@ Three lessons, each costing an experiment:
 The core itself went from 12 (Phase 0, flat memory) to 26 with page tables,
 the sync branch on writes and the MOS's hardware polling through the slow
 path; acceptable, to be revisited after the peripherals are fixed.
+
+## 2026-10-12: event-driven catch-up brings the machine to 95 clocks per cycle
+
+Same measurement after the restructure, MOS at the BASIC prompt:
+
+| Configuration                          | clocks/cycle |
+| -------------------------------------- | ------------ |
+| full machine                           | 95           |
+| no CRTC                                | 58           |
+| no CRTC, no VIAs                       | 50           |
+| core alone                             | 32           |
+
+How it is now shaped (`machine_advance` in `machine.c`):
+
+- The core only counts cycles. It catches up at an instruction boundary
+  only when `sync_due` has arrived: the earliest VIA timer underflow or
+  reload, ADC completion, or the next CRTC point where vsync could change
+  (end of line, or half-R0 in a vsync row), capped at 4096 cycles. Between
+  catch-ups the IRQ history is the last level repeated.
+- VIA timers advance by subtraction with the next event precomputed
+  (`via_ticks_to_event`); the exact per-tick code runs only on the event
+  tick. T1 now reloads from the latch on every underflow in both modes,
+  which is what beebjit's readback does.
+- The CRTC runs a per-tick loop, but with a fast path (`crtc_fast_ticks`)
+  that computes how many ticks can pass before any register hit, cursor
+  match, hsync, start-of-line chain or vsync point, and runs those with
+  only fetch, render hook and address increment. 82% of ticks take it at
+  the mode 7 prompt; the rest go through the exact tick.
+- RAM writes catch up only when the address falls in the window of display
+  memory the CRTC will fetch before `sync_due` (`wlo..whi`, published by
+  the machine). That took write catch-ups from 3.2 M to 75 k per 20 M
+  cycles; the MOS idle loop writes its workspace constantly.
+- Hardware accesses still cost a call each; the MOS idle loop makes one
+  every 13 cycles polling the keyboard. Demos do far less of that.
+
+Where the remaining 95 go, roughly: core 32, catch-up calls 10, VIAs 8,
+CRTC slow ticks 18 (hsync, line start chain, register hits), CRTC fast
+ticks 12, chunk bookkeeping 7, hardware access slow paths 8. The pixel
+side will be a byte stream per scanline from the fast path with the ULA
+writes logged against their horizontal position; pixels get made from
+that on core 0, so core 1's video cost stays near the fetch.

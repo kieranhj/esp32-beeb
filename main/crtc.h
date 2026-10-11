@@ -74,6 +74,8 @@ struct crtc {
     uint8_t dispen_shifts[4];
     uint8_t r4_hit, r5_hit, r9_hit;      // latched per scanline, as beebjit
     uint8_t data_byte;
+    uint8_t vsync_changed;               // set by crtc_update_vsync, cleared by crtc_run
+    uint32_t stat_fast, stat_slow;       // ticks by path, with MACHINE_STATS
 };
 
 void crtc_reset(struct crtc *c);

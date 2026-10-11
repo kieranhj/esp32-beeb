@@ -83,6 +83,14 @@ defined. Keep that shape: one translation unit per machine.
 effect until it is also made in `sdkconfig` (or `sdkconfig` is deleted and
 regenerated).
 
+Measuring: `main/main.c` prints `RESULT ... clk/cyc` for four profile masks
+(`machine_profile_skip`: bit 0 no CRTC, bit 1 no VIAs, bit 2 no catch-up)
+and `STATS` counters when built with `MACHINE_STATS`. `host/bench.exe
+roms/mos3.20 20000000` prints the same counters on the PC in a second; use
+it to see what a change does to call and chunk counts before flashing.
+Timings on the board are deterministic to the microsecond, so a single run
+is a measurement.
+
 Restoring other firmware on the board, from their own project folders:
 FluidBox is `../esp32-fluidbox/fluidbox` (`idf.py -p COM3 flash`); the stock
 Brookesia firmware is a whole-image flash of

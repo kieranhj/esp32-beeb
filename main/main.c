@@ -5,6 +5,7 @@
 // whole machine (CPU, VIAs, CRTC, ADC) ticking, and prints the mode 7 screen
 // as text so the boot can be seen to have reached the BASIC prompt.
 
+#define MACHINE_STATS 1
 #include <stdio.h>
 #include <string.h>
 
@@ -72,7 +73,7 @@ static void beeb_task(void *arg)
     // Four runs of 10 s emulated time each: full machine, then without
     // the CRTC step, without the VIA step, and with neither (the cost of the
     // per-cycle call itself).
-    static const uint8_t masks[4] = {0, 3, 11, 7};
+    static const uint8_t masks[4] = {0, 1, 3, 7};
     for (int run = 0; run < 4; run++) {
         machine_profile_skip = masks[run];
         const uint64_t slice = 20000000;
@@ -87,6 +88,11 @@ static void beeb_task(void *arg)
                masks[run], (unsigned long long)slice, (long long)us, mcps,
                240.0 * (double)us / (double)slice, mcps / 2.0,
                (unsigned long)m->crtc.frames, m->cpu.pc);
+        printf("STATS calls=%lu chunks=%lu crtc_fast=%lu crtc_slow=%lu\n",
+               (unsigned long)m->stat_calls, (unsigned long)m->stat_chunks,
+               (unsigned long)m->crtc.stat_fast, (unsigned long)m->crtc.stat_slow);
+        m->stat_calls = m->stat_chunks = 0;
+        m->crtc.stat_fast = m->crtc.stat_slow = 0;
     }
     print_screen(m);
     printf("BEEB end\n");

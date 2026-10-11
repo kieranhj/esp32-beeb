@@ -29,6 +29,12 @@
 struct machine {
     struct cpu6502 cpu;
     uint32_t synced;   // cycle count the peripherals have been stepped to
+    uint32_t sync_due; // next cycle the core must catch up at (see machine.c)
+    uint16_t wlo, whi; // display addresses fetched before sync_due
+    // Tuning statistics, counted only when MACHINE_STATS is defined.
+    uint32_t stat_calls, stat_chunks;
+    uint32_t stat_sync_boundary, stat_sync_write, stat_sync_io;
+    uint32_t stat_due_hist[17];
 
     uint8_t ram[0x8000];
     uint8_t lynne[0x5000];
@@ -43,6 +49,9 @@ struct machine {
     // Page tables: [0] user code, [1] code fetched from 0xC000-0xDFFF.
     uint8_t *rd_tab[2][256];
     uint8_t *wr_tab[2][256];
+    // Display memory for addresses 0x3000 and up: main RAM or LYNNE, indexed
+    // by the full address (the pointer is pre-offset). Set with ACCCON.
+    uint8_t *display_base;
 
     uint8_t romsel, acccon, ic32;
 
