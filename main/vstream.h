@@ -6,11 +6,11 @@
 // renderer, so a renderer that follows beebjit's beam model produces the same
 // pixels. Words:
 //
-//   tick:  bit 15 clear. bits 8-15 data byte, bits 0-7 flags:
+//   tick:  bit 7 clear. bits 8-15 data byte, bits 0-6 flags:
 //          VS_ODD     the second half of a 1 MHz character
 //          VS_DISPEN  display enable after the R8 skew
 //          VS_MA13    MA13 was set for this fetch (teletext addressing)
-//   event: bit 15 set. bits 8-14 type, bits 0-7 payload:
+//   event: bit 7 set. bits 0-6 type, bits 8-15 payload:
 //          VS_HSYNC   payload = hsync pulse width in ticks
 //          VS_VSYNC   payload = new level (1 raise, 0 lower)
 //          VS_RA      payload = row address | (ISV << 7)
@@ -18,6 +18,10 @@
 //          VS_ULACTRL payload = video ULA control register
 //          VS_ULAPAL  payload = video ULA palette write byte
 //          VS_FRAME   frame boundary marker from the CRTC (debug aid)
+//          VS_FRAMING a framing change (CRTC R0-R9 write, ULA clock or
+//                     teletext bit change); beebjit clears its canvas at
+//                     the next flyback after one, and the host renderer
+//                     copies that for the frame diff
 //
 // The producer writes into a ring of VS_RING words; the consumer reads at
 // its own pace. On the board the ring is in internal SRAM and the consumer
@@ -35,15 +39,17 @@ enum {
 };
 
 enum {
-    VS_EVENT = 0x8000,
-    VS_HSYNC = 0x8100,
-    VS_VSYNC = 0x8200,
-    VS_RA = 0x8300,
-    VS_CURSOR = 0x8400,
-    VS_ULACTRL = 0x8500,
-    VS_ULAPAL = 0x8600,
-    VS_FRAME = 0x8700,
+    VS_EVENT = 0x80,
+    VS_HSYNC = 0x81,
+    VS_VSYNC = 0x82,
+    VS_RA = 0x83,
+    VS_CURSOR = 0x84,
+    VS_ULACTRL = 0x85,
+    VS_ULAPAL = 0x86,
+    VS_FRAME = 0x87,
+    VS_FRAMING = 0x88,   // a CRTC R0-R9 write or ULA clock/teletext change
 };
+#define VS_EV(type, payload) ((uint16_t)((type) | ((payload) << 8)))
 
 #ifndef VS_RING
 #define VS_RING 32768   // words; a power of two

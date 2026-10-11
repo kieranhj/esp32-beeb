@@ -50,9 +50,9 @@ INLINE struct machine *crtc_owner(struct crtc *c);
 #define VS_PUT(c, w) do { struct machine *mm_ = crtc_owner(c); if (mm_->vs) vs_put(mm_->vs, (w)); } while (0)
 #define CRTC_RENDER(c, data, dispen, odd, ma13) \
     VS_PUT(c, (uint16_t)(((data) << 8) | ((odd) ? VS_ODD : 0) | ((dispen) ? VS_DISPEN : 0) | ((ma13) ? VS_MA13 : 0)))
-#define CRTC_HSYNC(c, width) VS_PUT(c, VS_HSYNC | (width))
-#define CRTC_CURSOR(c) VS_PUT(c, VS_CURSOR)
-#define CRTC_RA(c, ra, isv) VS_PUT(c, VS_RA | (ra) | ((isv) ? 0x80 : 0))
+#define CRTC_HSYNC(c, width) VS_PUT(c, VS_EV(VS_HSYNC, (width)))
+#define CRTC_CURSOR(c) VS_PUT(c, VS_EV(VS_CURSOR, 0))
+#define CRTC_RA(c, ra, isv) VS_PUT(c, VS_EV(VS_RA, (ra) | ((isv) ? 0x80 : 0)))
 #include "crtc.c"
 
 // Profiling switch for the per-cycle step (bit 0: skip the CRTC, bit 1:
@@ -245,7 +245,7 @@ static void sysvia_port_cb(struct via *via, void *ctx, int which)
     if (which == 1) {
         sysvia_port_b(m);
     } else {
-        sysvia_port_a(m);
+        sysvia_port_a(m);  // port A, or a CA2 flag clear with a key down
     }
 }
 
@@ -267,7 +267,7 @@ INLINE void machine_vsync(struct machine *m, int level)
 {
     via_set_ca1(&m->sysvia, level);
     if (m->vs) {
-        vs_put(m->vs, VS_VSYNC | level);
+        vs_put(m->vs, VS_EV(VS_VSYNC, level));
     }
 }
 
@@ -361,6 +361,14 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
         if (m->adc_busy && m->adc_countdown < w) {
             w = m->adc_countdown;
         }
+        // Scheduled key events: stop at the event cycle, apply after it.
+        uint32_t key_e = 0xffffffffu;
+        if (m->key_head < m->key_count) {
+            key_e = m->key_events[m->key_head].cycle - s;
+            if (key_e < w) {
+                w = key_e;
+            }
+        }
 
         // The CRTC may cut the chunk short at a vsync change.
         uint32_t done = w;
@@ -403,6 +411,13 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
             }
         }
         mask = ((mask << 1) | machine_irq_level(m)) & 0xffff;
+
+        // Key events land after the cycle's level is recorded, as beebjit's
+        // wakeup timer does relative to the interrupt poll of that cycle.
+        while (m->key_head < m->key_count && m->key_events[m->key_head].cycle == m->synced) {
+            struct machine_key_event *e = &m->key_events[m->key_head++];
+            machine_set_key(m, e->row, e->col, e->down);
+        }
     }
     // When must the core come back? The earliest VIA event, ADC completion
     // or CRTC vsync opportunity; also bound by the CRTC's render lag.
@@ -423,6 +438,9 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
         }
         if (m->adc_busy && (int32_t)(s + m->adc_countdown - due) < 0) {
             due = s + m->adc_countdown;
+        }
+        if (m->key_head < m->key_count && (int32_t)(m->key_events[m->key_head].cycle - due) < 0) {
+            due = m->key_events[m->key_head].cycle;
         }
         if (!(skip & 1)) {
             uint32_t v = s + crtc_ticks_to_check(&m->crtc);
@@ -579,6 +597,9 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
 {
     switch (addr & 0xfffc) {
     case 0xfe00: case 0xfe04:
+        if ((addr & 1) && m->vs && (m->crtc.addr_reg & 0x1f) <= 9) {
+            vs_put(m->vs, VS_EV(VS_FRAMING, 0));
+        }
         crtc_write(&m->crtc, addr & 1, val);
         break;
     case 0xfe08: case 0xfe0c:
@@ -598,13 +619,17 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
         if (addr & 1) {
             m->ula_pal[val >> 4] = val & 0xf;
             if (m->vs) {
-                vs_put(m->vs, VS_ULAPAL | val);
+                vs_put(m->vs, VS_EV(VS_ULAPAL, val));
             }
         } else {
+            uint8_t old = m->ula_ctrl;
             m->ula_ctrl = val;
             crtc_set_ula(&m->crtc, val);
             if (m->vs) {
-                vs_put(m->vs, VS_ULACTRL | val);
+                if ((old ^ val) & 0x12) {
+                    vs_put(m->vs, VS_EV(VS_FRAMING, 0));
+                }
+                vs_put(m->vs, VS_EV(VS_ULACTRL, val));
             }
         }
         break;
@@ -821,4 +846,28 @@ void machine_reset(struct machine *m)
 uint64_t machine_run(struct machine *m, uint64_t until)
 {
     return cpu6502_run(&m->cpu, until);
+}
+
+int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int down)
+{
+    if (m->key_count >= 512) {
+        return 0;
+    }
+    struct machine_key_event *e = &m->key_events[m->key_count++];
+    e->cycle = cycle;
+    e->row = (uint8_t)row;
+    e->col = (uint8_t)col;
+    e->down = (uint8_t)down;
+    return 1;
+}
+
+void machine_set_key(struct machine *m, int row, int col, int down)
+{
+    uint8_t bit = 1 << (row & 7);
+    if (down) {
+        m->keys[col & 15] |= bit;
+    } else {
+        m->keys[col & 15] &= ~bit;
+    }
+    sysvia_port_a(m);
 }

@@ -57,6 +57,10 @@ struct render {
     int cursor_segments[4];
     int is_crt_grayscale_fakeout;
     uint32_t frames;                  // vsyncs seen (flyback count)
+    // beebjit compatibility for frame diffs: clear the canvas at the
+    // flyback after a framing change, as beebjit does after its paint.
+    int compat_clear;
+    int framing_changed;
 };
 
 void render_init(struct render *r, uint32_t *buffer);

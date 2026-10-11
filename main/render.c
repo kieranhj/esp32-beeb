@@ -39,6 +39,7 @@ void render_init(struct render *r, uint32_t *buffer)
     r->chars_per_line = 3;
     r->needs_mode_recalc = 1;
     r->cursor_segment_index = -1;
+    r->framing_changed = 1;  // beebjit: set at power on
     for (int i = 0; i < 8; i++) {
         r->black[i] = BG;
     }
@@ -251,6 +252,12 @@ static void do_vsync(struct render *r)
         return;
     }
     r->frames++;
+    if (r->compat_clear && r->framing_changed) {
+        for (uint32_t i = 0; i < RENDER_WIDTH * RENDER_HEIGHT; i++) {
+            r->buffer[i] = BG;
+        }
+    }
+    r->framing_changed = 0;
     r->vert_beam_pos = 0;
     r->is_crt_grayscale_fakeout = 0;  // the grayscale conversion is not ported
     if (r->horiz_beam_pos >= 512) {
@@ -289,7 +296,7 @@ static void render_tick(struct render *r, uint8_t data, int is_odd_tick)
 
 void render_word(struct render *r, uint16_t w)
 {
-    if (!(w & VS_EVENT)) {
+    if (!(w & VS_EVENT)) {  // tick
         uint8_t data = w >> 8;
         int odd = w & VS_ODD;
         int dispen = (w & VS_DISPEN) != 0;
@@ -310,8 +317,8 @@ void render_word(struct render *r, uint16_t w)
         render_tick(r, data, odd);
         return;
     }
-    uint8_t payload = w & 0xff;
-    switch (w & 0xff00) {
+    uint8_t payload = w >> 8;
+    switch (w & 0xff) {
     case VS_HSYNC:
         do_hsync(r, (uint32_t)payload << (r->is_clock_2mhz ? 0 : 1));
         break;
@@ -341,6 +348,9 @@ void render_word(struct render *r, uint16_t w)
     case VS_ULAPAL:
         r->logical_to_physical[payload >> 4] = payload & 0x0f;
         r->tables_built = 0;
+        break;
+    case VS_FRAMING:
+        r->framing_changed = 1;
         break;
     default:
         break;

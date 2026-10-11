@@ -16,13 +16,14 @@ budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
 design stands. `main/cpu6502.c` is a 65C12 (with an NMOS mode) with exact
 bus sequencing that passes the Klaus Dormann tests on the host and the board.
 `main/machine.c`
-is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs, and
-the 6845 state machine in `main/crtc.c` (counters, syncs, address generation,
-no pixels yet). On the host, MOS 3.20 boots and the instruction trace matches
-beebjit cycle for cycle for the first 10 M cycles (2.77 M instructions),
-including every VIA, vsync and ADC interrupt. `main/main.c` is still the
-Phase 0 benchmark. Next: the machine on the board with a clocks-per-cycle
-measurement, then the pixel side of Phase 2.
+is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs,
+the 6845 in `main/crtc.c` and the video stream it emits; `main/render.c`
+and `main/teletext.c` turn the stream into pixels. On the host the
+instruction trace matches beebjit cycle for cycle through 10 M cycles of
+boot and through typed MODE changes, and ten frame comparisons (mode 7 boot,
+MODE 0 to 6, line drawing, VDU 19) are pixel identical. On the board the
+machine runs at 95 clocks per cycle at the BASIC prompt (`main/main.c` is
+still a benchmark harness, nothing is displayed). Next: Phase 3, the panel.
 
 ## The budget
 
@@ -75,22 +76,25 @@ measurement, then the pixel side of Phase 2.
       latch point, cursor skew, interlace, DISPEN skew, vsync into CA1.
       Verified by the trace diff through boot; the CRTC test discs will
       verify the rest once there are pixels and a frame diff.
-- [ ] A frame diff needs a way to get a frame out of beebjit: there is no
-      `BEEBJIT_DUMP_FRAME`; the debugger has `frame_buffer_crc32` and
-      `render_x/y`, so either compare CRCs or add a dump to our beebjit
-      build (`out/beebjit-win` is built from source by our script).
-- [ ] Video ULA at the pixel clock: control register, 16-entry palette,
-      teletext/graphics select, 2 MHz vs 1 MHz character rate, flash colour,
-      mid-line palette writes landing on the right pixel.
-- [ ] Scanline output: each completed line is 16-bit pixels at native ULA
-      resolution (640 or 320 or 160 wide, plus border), pushed to the ring
-      with its line number and a frame-start marker.
-- [ ] Frame diff tool: `BEEBJIT_DUMP_FRAME=<path>` on the PC vs our dumped
-      frame for the same demo and frame count. Run across the whole
-      `discs/` set; the CRTC test discs (`crtc-*.ssd`) are the first targets.
-- [ ] Mode 7 teletext: SAA5050 character ROM, double height, graphics,
-      hold graphics, flashing. Important but may slip to v2; the demos that
-      need it are listed in `docs/decisions.md`.
+- [x] Video stream (`main/vstream.h`): one 16-bit word per 2 MHz tick from
+      the CRTC fast path plus tagged events (hsync, vsync, RA, cursor, ULA
+      control and palette writes, framing change), in beebjit's render call
+      order. This is what crosses to core 0 on the board.
+- [x] Renderer (`main/render.c`): beebjit's beam model and mode tables
+      ported; teletext (`main/teletext.c`): beebjit's SAA5050 port with
+      b-em's glyphs. Pixel identical to beebjit (`tools/frametest.py`):
+      mode 7 boot, MODE 0 to 6, a 16-colour line drawing, VDU 19.
+- [x] Frame diff tooling: `tools/build_beebjit_win.sh` patches a
+      `dumpframe` command into beebjit; `host/frame.exe` renders our stream
+      to beebjit's 768x640 canvas; `tools/framediff.py` and `framecrop.py`
+      compare and show; `tools/frametest.py` types commands into both
+      through the keyboard matrix at matching cycles.
+- [ ] Frame diffs on the CRTC test discs (`crtc-*.ssd`) and the demo set:
+      needs the 1770 and `.ssd` loading from Phase 4, then goes into
+      `tools/frametest.py` as more cases.
+- [ ] Mid-line palette writes land on the right pixel by construction (the
+      ULA event sits between the tick words); still to be shown on a demo
+      that does it, same dependency.
 
 ## Phase 3: presentation
 

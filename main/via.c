@@ -25,8 +25,16 @@ static inline void via_raise(struct via *via, uint8_t bits)
 
 static inline void via_clear(struct via *via, uint8_t bits)
 {
+    int was_ca2 = via->ifr & VIA_INT_CA2;
     via->ifr &= ~bits;
     via_check_irq(via);
+    // Clearing the CA2 flag while the keyboard auto-scan has a key down:
+    // the line toggles again as the scan sweeps past the key, so the flag
+    // comes straight back (beebjit's via_set_IFR special case). The machine
+    // re-evaluates port A, which does the toggle.
+    if (was_ca2 && (bits & VIA_INT_CA2) && via->port_cb) {
+        via->port_cb(via, via->ctx, 2);
+    }
 }
 
 VIA_API void via_update_bus_a(struct via *via)

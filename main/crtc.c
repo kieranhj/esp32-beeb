@@ -526,10 +526,12 @@ CRTC_API void crtc_write(struct crtc *c, int addr, uint8_t val)
     if (c->is_isv) {
         c->scanline_counter &= ~1;  // odd R9 in ISV mode is not modelled
     }
-    if (reg == CRTC_R7_VSYNC) {
-        // A new R7 can start a vsync at once, mid scanline.
-        crtc_line_start_checks(c, 1);
-    }
+    // beebjit re-evaluates its line-start latches (R4/R5/R9 hits, the R6
+    // and R7 checks) at the start of every video advance, which follows any
+    // register write within a few cycles (the next RAM write by the CPU
+    // triggers one). A new R7 can start a vsync at once, mid scanline; a
+    // new R6 can end the display at once. Do it here, at the write.
+    crtc_line_start_checks(c, 1);
 }
 
 CRTC_API void crtc_reset(struct crtc *c)

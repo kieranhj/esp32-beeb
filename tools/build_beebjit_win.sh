@@ -7,9 +7,10 @@
 #       -debug -print -commands "breakat 100000;c;q"
 #
 # The sources are copied to out/beebjit-src and patched before building:
-#   - a debugger command "dumpframe <file>" that writes the render buffer
-#     (two uint32 for width and height, then width*height ARGB words), for
-#     tools/framediff.py; beebjit has no frame dump of its own.
+#   - a debugger command "dumpframe <file>" that advances the video to the
+#     current cycle and writes the render buffer (two uint32 for width and
+#     height, then width*height ARGB words), for tools/framediff.py; beebjit
+#     has no frame dump of its own.
 #
 # Why not build_win_opt.sh: that needs mingw gcc, which is not installed.
 # zig cc assembles the x64 .S files fine but its assembler, unlike GNU as,
@@ -34,6 +35,9 @@ add = '''    } else if (!strcmp(p_command, "dumpframe") && (p_param_1_str != NUL
       struct render_struct* p_r = bbc_get_render(p_bbc);
       uint32_t hdr[2];
       struct util_file* p_f;
+      /* The video catches up lazily; bring it to the current cycle so the
+       * dump is exactly as of now. */
+      video_advance_for_memory_sync(bbc_get_video(p_bbc));
       hdr[0] = render_get_width(p_r);
       hdr[1] = render_get_height(p_r);
       p_f = util_file_open(p_param_1_str, 1, 1);

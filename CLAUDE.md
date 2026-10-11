@@ -54,6 +54,22 @@ TRACE_DEBUG=1 host/trace.exe roms/mos3.20 2000000 2>&1 >/dev/null | head   # VIA
 wall time and the trace is irreproducible. beebjit's debugger `eval` of VIA
 registers (`sysvia_r[n]`) returns stale timer values; use the trace instead.
 
+Frame diffs (pixels against beebjit's canvas):
+
+```sh
+zig cc -O2 -std=c11 -Wall -Wextra -Wno-unused-function -Wno-unused-but-set-variable \
+    -Wno-unused-parameter -Wno-unused-variable -o host/frame.exe host/frame.c
+python tools/frametest.py             # all cases; add names to run some; --trace adds a trace diff
+python tools/framecrop.py ref.bin ours.bin out.png   # the differing region, reference above ours
+host/frame.exe roms/mos3.20 2000000 out/f.bin --key <cycle> <row> <col> <down> --crtc <cycle>
+```
+
+`host/frame.exe` renders our video stream the way beebjit renders, dumps the
+768x640 canvas, and can press keys at exact cycles, poke RAM, print CRTC
+counters and beam positions (`--crtc`, with `FRAME_DEBUG=1`) and write a
+trace (`--trace`). `tools/frametest.py` drives both emulators through the
+keyboard matrix; its cases are the regression set for video changes.
+
 Board:
 
 ```powershell

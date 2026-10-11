@@ -289,3 +289,48 @@ ticks 12, chunk bookkeeping 7, hardware access slow paths 8. The pixel
 side will be a byte stream per scanline from the fast path with the ULA
 writes logged against their horizontal position; pixels get made from
 that on core 0, so core 1's video cost stays near the fetch.
+
+## 2026-10-12: video as a stream, rendered beebjit's way, pixel identical
+
+The CRTC side emits one 16-bit word per 2 MHz tick (data byte, DISPEN
+after skew, odd half, MA13 in the flags byte, bit 7 clear) and tagged
+events (bit 7 set: hsync width, vsync level, RA/ISV, cursor, ULA control,
+ULA palette, framing change) into a ring (`main/vstream.h`). The renderer
+(`main/render.c`) is a port of beebjit's render.c beam model: 8 pixels per
+tick, hsync to the left and down two rasters, vsync to the top, two rasters
+per scanline, the forced hsync at 1536 pixels and the forced vsync at 768
+rasters, cursor XOR segments, mode tables rebuilt from the ULA palette.
+Teletext (`main/teletext.c`) is a port of beebjit's SAA5050 with b-em's
+glyphs. Ten frame comparisons against beebjit's patched `dumpframe` are
+pixel identical. Things the diff taught:
+
+- The stream encoding must not use bit 15 for events: data bytes with bit 7
+  set (any bitmap mode) became events and vanished. Bit 7 of the flags byte
+  is the discriminator now.
+- beebjit clears its whole render buffer at the flyback that follows a
+  framing change (CRTC R0-R9 write, ULA clock or teletext change). That is
+  a display policy, not hardware; the host renderer copies it behind
+  `compat_clear` so transitional frames compare. The board will not do it.
+- beebjit re-evaluates its line-start latches at the start of every video
+  advance, which follows any register write within a few cycles; the CRTC
+  now does that at the write. It made no visible difference in these tests
+  but keeps the models aligned for register writes mid-line.
+- Keyboard: with a key held in auto-scan mode, the CA2 flag comes straight
+  back when the MOS clears it (the scan passes the key again); beebjit
+  models this in its IFR write and now so does the VIA via its port
+  callback. Key presses for tests are scheduled inside the machine at an
+  exact cycle and applied after that cycle's IRQ level is recorded, which
+  is where beebjit's queued keys land relative to the poll.
+- beebjit applies a queued key at the next multiple of 20000 cycles after
+  the breakpoint that queued it; `tools/frametest.py` breaks 2000 cycles
+  early and schedules ours on that grid so both sides press at the same
+  cycle. Its 2 ms wakeup is 100 Hz in fast mode.
+- beebjit's debugger `eval` of VIA registers is stale (timers sync lazily),
+  but `crtc_c0/c4/c9/ma` and `render_x/y` are advanced on read and were
+  the tools that found the last differences.
+
+Licensing: beebjit is GPLv3 and `teletext_glyphs.h` is Sarah Walker's GPL
+data. The renderer and teletext code are ports and the CRTC, VIA and 65C12
+quirks are restated from beebjit, so if this emulator is ever published it
+is GPLv3, or those parts get a clean-room rewrite. Nothing here can be
+published anyway while it ships the ROMs and discs.

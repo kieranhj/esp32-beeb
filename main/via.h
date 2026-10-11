@@ -51,7 +51,7 @@ struct via {
     uint8_t bus_a;            // resolved port A bus value
     uint8_t irq;              // IFR bit 7, the IRQ output
     // Port change notification: the machine recomputes peripheral levels.
-    void (*port_cb)(struct via *via, void *ctx, int which);  // 0 = A, 1 = B
+    void (*port_cb)(struct via *via, void *ctx, int which);  // 0 = A, 1 = B, 2 = CA2 flag cleared
     void *ctx;
 };
 

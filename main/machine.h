@@ -60,6 +60,10 @@ struct machine {
 
     // Keyboard matrix: bit (row) set in keys[col] when the key is down.
     uint8_t keys[16];
+    // Scheduled key events, applied by the catch-up at their exact cycle
+    // (in order of cycle). machine_queue_key() adds; a 32-bit cycle count.
+    struct machine_key_event { uint32_t cycle; uint8_t row, col, down; } key_events[512];
+    uint16_t key_head, key_count;
 
     // CMOS/RTC (HD146818) as driven through the system VIA.
     uint8_t cmos_ram[64];
@@ -89,5 +93,11 @@ void machine_init(struct machine *m);  // zero state, build tables, VIAs
 void machine_reset(struct machine *m); // power-on reset of CPU and VIAs
 // Runs until the machine's total cycle count reaches `until`.
 uint64_t machine_run(struct machine *m, uint64_t until);
+// Presses or releases a key of the BBC matrix (row 0-7, column 0-15); the
+// system VIA sees it at once.
+void machine_set_key(struct machine *m, int row, int col, int down);
+// Schedules a key change for an exact cycle count (events must be queued in
+// cycle order). Returns 0 if the queue is full.
+int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int down);
 
 #endif
