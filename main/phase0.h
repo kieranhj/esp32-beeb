@@ -5,6 +5,7 @@
 #include "cpu6502.h"
 
 extern uint8_t phase0_ram[65536];
+extern uint8_t *phase0_table[256];
 extern uint32_t phase0_linebuf[256];
 extern uint32_t phase0_expand[16];
 
@@ -15,7 +16,7 @@ extern uint32_t phase0_expand[16];
 // [0] memory address, [1] horizontal counter, [2] line count.
 static inline __attribute__((always_inline)) void phase0_video_tick(struct cpu6502 *cpu)
 {
-    uint8_t b = cpu->mem[cpu->hook[0] & 0x7fff];
+    uint8_t b = phase0_ram[cpu->hook[0] & 0x7fff];
     cpu->hook[0]++;
     uint32_t *p = &phase0_linebuf[(cpu->hook[1] & 127) * 2];
     p[0] = phase0_expand[b >> 4];

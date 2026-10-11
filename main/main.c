@@ -21,6 +21,7 @@ static const char *TAG = "phase0";
 
 // Internal SRAM: .bss is DRAM anyway, but be explicit, this is the point.
 DRAM_ATTR uint8_t phase0_ram[65536];
+DRAM_ATTR uint8_t *phase0_table[256];
 DRAM_ATTR uint32_t phase0_linebuf[256];
 DRAM_ATTR uint32_t phase0_expand[16];
 
@@ -130,7 +131,7 @@ static void bench_task(void *arg)
 
         load_synth();
         memset(&cpu, 0, sizeof cpu);
-        cpu.mem = phase0_ram;
+        cpu6502_map_flat(&cpu, phase0_ram, phase0_table);
         cpu.cmos = 1;
         v->reset(&cpu);
         int64_t us = timed_run(v, &cpu, synth_cycles);
@@ -138,7 +139,7 @@ static void bench_task(void *arg)
 
         load_klaus();
         memset(&cpu, 0, sizeof cpu);
-        cpu.mem = phase0_ram;
+        cpu6502_map_flat(&cpu, phase0_ram, phase0_table);
         cpu.cmos = 1;
         v->reset(&cpu);
         us = timed_run(v, &cpu, klaus_cycles);
@@ -149,7 +150,7 @@ static void bench_task(void *arg)
     // Correctness on target: full Klaus run through the IRAM build.
     load_klaus();
     memset(&cpu, 0, sizeof cpu);
-    cpu.mem = phase0_ram;
+    cpu6502_map_flat(&cpu, phase0_ram, phase0_table);
     cpu.cmos = 1;
     cpu6502_reset_iram(&cpu);
     int64_t t0 = esp_timer_get_time();

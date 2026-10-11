@@ -10,3 +10,6 @@ out/
 # host test binaries
 host/*.exe
 host/*.pdb
+
+# host trace outputs
+out/

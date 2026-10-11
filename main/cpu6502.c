@@ -18,9 +18,11 @@
 //   - JMP (abs) has no page-wrap bug and takes 6 cycles; JMP (abs,X) exists
 //   - BRK and interrupts clear D
 //   - the unused opcodes are NOPs of defined length and cycle count
-// Decimal-mode N and Z come from the decimal result on CMOS (the Klaus 65C02
-// test checks this); beebjit uses the NMOS rules for both parts, so a trace
-// diff can differ in N/Z right after a decimal ADC/SBC. See decisions.md.
+// Two places where the 65C02 and beebjit's model of it disagree, and the
+// Klaus 65C02 tests side with the chip: BIT immediate sets only Z, and
+// decimal-mode N/Z come from the decimal result. The real build follows the
+// chip; CPU6502_ORACLE_COMPAT (host trace harness only) follows beebjit so
+// trace diffs stay clean. See decisions.md.
 
 #include "cpu6502.h"
 
@@ -33,28 +35,67 @@
 #ifndef CPU6502_TABLE_ATTR
 #define CPU6502_TABLE_ATTR
 #endif
+#ifndef CPU6502_IO_RD
+#define CPU6502_IO_RD(cpu, addr) (cycle(cpu), (uint8_t)0xff)
+#endif
+#ifndef CPU6502_IO_WR
+#define CPU6502_IO_WR(cpu, addr, v) (cycle(cpu), (void)(v))
+#endif
+#ifndef CPU6502_TRACE
+#define CPU6502_TRACE(cpu) ((void)0)
+#endif
+#ifndef CPU6502_TRACE_IRQ
+#define CPU6502_TRACE_IRQ(cpu, nmi) ((void)0)
+#endif
 
 #define INLINE static inline __attribute__((always_inline))
 
 // ---- bus -------------------------------------------------------------------
 
-INLINE uint8_t rd(struct cpu6502 *cpu, uint16_t addr)
+// One bus cycle: advance the machine, then record the IRQ line.
+INLINE void cycle(struct cpu6502 *cpu)
 {
     cpu->cyc++;
     CPU6502_TICK(cpu);
-    return cpu->mem[addr];
+    cpu->irq_hist = (cpu->irq_hist << 1) | cpu->irq_line;
+}
+
+INLINE uint8_t rd(struct cpu6502 *cpu, uint16_t addr)
+{
+    uint8_t *p = cpu->rd_tab[addr >> 8];
+    if (__builtin_expect(p != 0, 1)) {
+        cycle(cpu);
+        return p[addr & 0xff];
+    }
+    return CPU6502_IO_RD(cpu, addr);
 }
 
 INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
 {
-    cpu->cyc++;
-    CPU6502_TICK(cpu);
-    cpu->mem[addr] = v;
+    uint8_t *p = cpu->wr_tab[addr >> 8];
+    if (__builtin_expect(p != 0, 1)) {
+        cycle(cpu);
+        p[addr & 0xff] = v;
+        return;
+    }
+    CPU6502_IO_WR(cpu, addr, v);
 }
 
 INLINE uint8_t fetch(struct cpu6502 *cpu)
 {
     return rd(cpu, cpu->pc++);
+}
+
+// Opcode fetch: selects the table set for this instruction (see cpu6502.h).
+INLINE uint8_t fetch_opcode(struct cpu6502 *cpu)
+{
+    int sel = ((cpu->pc >> 13) == 6);
+    cpu->rd_tab = cpu->rd_tabs[sel];
+    cpu->wr_tab = cpu->wr_tabs[sel];
+    cpu->i_poll = cpu->i;
+    cpu->no_poll = 0;
+    CPU6502_TRACE(cpu);
+    return fetch(cpu);
 }
 
 // A cycle the CMOS part spends re-reading the last instruction byte: it hits
@@ -243,12 +284,19 @@ INLINE void op_adc(struct cpu6502 *cpu, uint8_t m)
         }
         cpu->c = r >= 0x100;
         cpu->a = (uint8_t)r;
+#ifdef CPU6502_ORACLE_COMPAT
+        if (cpu->cmos) {
+            idle(cpu);
+        }
+        cpu->z = ((bin & 0xff) == 0);  // beebjit: NMOS flag rules on CMOS
+#else
         if (cpu->cmos) {
             idle(cpu);
             set_nz(cpu, cpu->a);
         } else {
             cpu->z = ((bin & 0xff) == 0);
         }
+#endif
     }
 }
 
@@ -278,7 +326,9 @@ INLINE void op_sbc(struct cpu6502 *cpu, uint8_t m)
         }
         cpu->a = (uint8_t)r;
         idle(cpu);
+#ifndef CPU6502_ORACLE_COMPAT
         set_nz(cpu, cpu->a);
+#endif
     } else {
         int al = (a & 0x0f) - (m & 0x0f) - borrow;
         if (al < 0) {
@@ -426,6 +476,7 @@ INLINE void interrupt(struct cpu6502 *cpu, uint16_t vec, int b)
     push(cpu, cpu->pc & 0xff);
     push(cpu, pack_p(cpu, b));
     cpu->i = 1;
+    cpu->i_poll = 1;  // beebjit: no IRQ straight after BRK or an interrupt
     if (cpu->cmos) {
         cpu->d = 0;
     }
@@ -433,15 +484,35 @@ INLINE void interrupt(struct cpu6502 *cpu, uint16_t vec, int b)
     cpu->pc = lo | (rd(cpu, vec + 1) << 8);
 }
 
+void CPU6502_FN(cpu6502_map_flat)(struct cpu6502 *cpu, uint8_t *mem, uint8_t **table)
+{
+    for (int i = 0; i < 256; i++) {
+        table[i] = mem + i * 256;
+    }
+    cpu->rd_tabs[0] = cpu->rd_tabs[1] = table;
+    cpu->wr_tabs[0] = cpu->wr_tabs[1] = table;
+    cpu->rd_tab = cpu->wr_tab = table;
+}
+
 void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
 {
-    cpu->a = cpu->x = cpu->y = 0;
+    const uint8_t *vec = cpu->rd_tabs[0][0xff];
+    // Power-on register values are undefined on the chip; these are
+    // beebjit's, so traces match from the first instruction.
+    cpu->a = 0xaa;
+    cpu->x = cpu->y = 0;
     cpu->s = 0xfd;
-    cpu->n = cpu->z = cpu->c = cpu->v = cpu->d = 0;
+    cpu->n = cpu->c = cpu->v = cpu->d = 0;
+    cpu->z = 1;
     cpu->i = 1;
     cpu->irq_line = 0;
-    cpu->nmi_line = cpu->nmi_seen = 0;
-    cpu->pc = cpu->mem[0xfffc] | (cpu->mem[0xfffd] << 8);
+    cpu->nmi_pending = 0;
+    cpu->irq_hist = 0;
+    cpu->i_poll = 1;
+    cpu->no_poll = 0;
+    cpu->rd_tab = cpu->rd_tabs[0];
+    cpu->wr_tab = cpu->wr_tabs[0];
+    cpu->pc = vec[0xfc] | (vec[0xfd] << 8);
 }
 
 CPU6502_CODE_ATTR
@@ -515,22 +586,25 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 #define NEXT continue
 
     while ((int32_t)(end - cpu->cyc) > 0) {
-        // Interrupt lines sampled at the instruction boundary.
-        if (cpu->nmi_line && !cpu->nmi_seen) {
-            cpu->nmi_seen = 1;
+        // Interrupt decision for the instruction that just finished: bit 2
+        // of the history is the line two cycles before its end.
+        if (cpu->nmi_pending) {
+            cpu->nmi_pending = 0;
+            CPU6502_TRACE_IRQ(cpu, 1);
             (void)rd(cpu, cpu->pc);
             (void)rd(cpu, cpu->pc);
             interrupt(cpu, 0xfffa, 0);
             continue;
         }
-        if (cpu->irq_line && !cpu->i) {
+        if ((cpu->irq_hist & 4) && !cpu->i_poll && !cpu->no_poll) {
+            CPU6502_TRACE_IRQ(cpu, 0);
             (void)rd(cpu, cpu->pc);
             (void)rd(cpu, cpu->pc);
             interrupt(cpu, 0xfffe, 0);
             continue;
         }
 
-        uint8_t op = fetch(cpu);
+        uint8_t op = fetch_opcode(cpu);
         uint16_t ea;
         uint8_t t;
 
@@ -688,7 +762,11 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(2c) op_bit(cpu, rd(cpu, am_abs(cpu))); NEXT;
         OPC(34) op_bit(cpu, rd(cpu, am_zpi(cpu, cpu->x))); NEXT;
         OPC(3c) op_bit(cpu, rd(cpu, am_absi_r(cpu, cpu->x))); NEXT;
+#ifdef CPU6502_ORACLE_COMPAT
+        OPC(89) op_bit(cpu, fetch(cpu)); NEXT;  // beebjit: full BIT flags
+#else
         OPC(89) cpu->z = ((cpu->a & fetch(cpu)) == 0); NEXT;  // BIT imm: Z only
+#endif
 
         OPC(04) RMW(am_zp(cpu), op_tsb); NEXT;
         OPC(0c) RMW(am_abs(cpu), op_tsb); NEXT;
@@ -797,6 +875,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             (void)rd(cpu, cpu->pc);
             (void)rd(cpu, 0x100 | cpu->s);
             unpack_p(cpu, pull(cpu));
+            cpu->i_poll = cpu->i;  // pulled I is what the poll sees
             t = pull(cpu);
             cpu->pc = t | (pull(cpu) << 8);
             NEXT;
@@ -806,7 +885,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             NEXT;
 
         // ---- CMOS defined NOPs ----
-        OPC(nop1) NEXT;
+        OPC(nop1) cpu->no_poll = 1; NEXT;
         OPC(nop2) (void)fetch(cpu); NEXT;
         OPC(nopzp) (void)rd(cpu, am_zp(cpu)); NEXT;
         OPC(nopzpx) (void)rd(cpu, am_zpi(cpu, cpu->x)); NEXT;

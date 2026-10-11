@@ -14,9 +14,13 @@ Phase 0 is done: the measured cost is 12 to 17 host clocks per emulated cycle
 for the CPU alone and 35 to 41 with a video-shaped per-cycle step, against a
 budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
 design stands. `main/cpu6502.c` is a 65C12 (with an NMOS mode) with exact
-bus sequencing that passes the Klaus Dormann tests on the host and the board;
-beebjit runs natively on Windows as the oracle; `main/main.c` is still the
-Phase 0 benchmark. Phase 1 continues with the Master memory map and VIAs.
+bus sequencing that passes the Klaus Dormann tests on the host and the board.
+`main/machine.c`
+is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs. On
+the host, MOS 3.20 boots and the instruction trace matches beebjit cycle for
+cycle for 1.44 M cycles (393,940 instructions), up to the first vsync
+interrupt, which needs the real CRTC. `main/main.c` is still the Phase 0
+benchmark. Phase 2 (CRTC) is next; the ESP build of the machine comes with it.
 
 ## The budget
 
@@ -42,27 +46,22 @@ Phase 0 benchmark. Phase 1 continues with the Master memory map and VIAs.
 
 - [x] 65C12 opcode map and bus quirks (see decisions, "the Master's CPU is
       a 65C12"); Klaus Dormann's five tests pass via `sh host/build.sh`.
-- [ ] Interrupt polling on the penultimate cycle of each instruction rather
-      than at instruction boundaries (beebjit's `interp_poll_irq_now` points
-      are the reference), and the Phase 0 benchmark replaced by the machine
-      in `main/main.c`.
-- [ ] Master memory map: ROMSEL (0xFE30) with ANDY, ACCCON (0xFE34) with
-      HAZEL, shadow (Y), VDU-driver shadow select (E/X), TST bit ignored.
-      All paging as pointer-table updates, never copies.
-- [ ] Two 6522 VIAs: timers 1 and 2 with the real reload/underflow timing,
-      PCR/ACR, IFR/IER, keyboard matrix scanning through the system VIA, the
-      1 MHz bus stretch on VIA and other 1 MHz peripheral accesses.
-- [ ] Minimal 0xFE4x..0xFEFF decode so MOS boots: ACIA, serial ULA, 1770
-      stubs returning idle, CMOS/RTC enough for MOS 3.20 not to complain.
-- [ ] Trace diff tool in `tools/`: `out/beebjit-win/beebjit.exe -master
-      -mode interp -headless -fast -debug -print` (built by
-      `tools/build_beebjit_win.sh`) prints every instruction; our host build
-      prints the same line format; the tool reports the first divergence.
-      Target: identical streams for the first million cycles of MOS 3.20
-      boot. Decimal-mode N/Z are a known, accepted difference.
-- [ ] Host build: the core compiles with a desktop C compiler too (no ESP
-      headers in `cpu6502.c`, `via.c`, `machine.c`), so trace diffs run on
-      the PC in seconds instead of over a 115200 baud link.
+- [x] Interrupt polling before the penultimate cycle (IRQ line history in
+      the core, I flag as of instruction start, RTI uses the pulled flag).
+- [x] Master memory map as page tables with two sets for the VDU-driver
+      shadow rule; ROMSEL/ANDY, ACCCON/HAZEL/LYNNE.
+- [x] Two 6522 VIAs stepped per 1 MHz tick, 1 MHz bus stretch, keyboard
+      matrix (nothing pressed yet), IC32, CMOS/RTC reads from defaults.
+- [x] Minimal SHEILA decode: ACIA status via a serial ULA model, ADC with
+      conversion time and CB1, 1770 idle, CRTC/ULA register stores.
+- [x] Trace diff: `host/trace.exe` and `tools/tracediff.py`; see CLAUDE.md
+      for the command. Matches beebjit for 1.44 M cycles of boot.
+- [x] Host build of the machine (`host/trace.c` includes `machine.c`).
+- [ ] The Phase 0 benchmark replaced by the machine in `main/main.c`, with
+      the ROM set in flash and the RAM arrays placed in internal SRAM;
+      re-measure clocks per cycle with the machine running MOS.
+- [ ] Keyboard input path (keys[] matrix is wired, nothing feeds it) and the
+      CMOS write side so *CONFIGURE sticks; both can wait for Phase 5.
 
 ## Phase 2: video
 

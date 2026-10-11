@@ -164,3 +164,28 @@ line format:
 ```
 
 The trace diff tool in Phase 1 prints that format from our core.
+
+**`-accurate` is mandatory.** Without it beebjit clocks the VIAs, CRTC and
+ADC from wall time even in `-fast` mode, so timer interrupts land at random
+emulated cycles and the trace is not reproducible. An afternoon went on a
+"spurious" T1 interrupt before that was found. `run_functional_tests.sh`
+always passes both flags; so must we.
+
+## 2026-10-11: Phase 1 machine matches beebjit for 1.44 M cycles
+
+`main/machine.c` boots MOS 3.20 on the host and the trace diff against
+beebjit (`-master -mode interp -fast -accurate`) is identical for 393,940
+instructions including every cycle count, up to the first vsync interrupt,
+which needs the real CRTC. Things that had to be right to get there, each
+found by the diff:
+
+- power-on register and RAM state as beebjit has them (A=AA, Z set; main
+  RAM 0xFF except zero page; Master RAMs zero);
+- the 1 MHz stretch on FRED/JIM as well as SHEILA;
+- interrupt polling before the penultimate cycle, with CLI/SEI/PLP seen by
+  the poll as their old I value and RTI as the pulled one;
+- the serial ULA: MOS selects RS423 early, which raises CTS and hides TDRE
+  in the ACIA status (0x08, not 0x02);
+- the two deliberate differences from beebjit (BIT immediate flags, decimal
+  N/Z) are behind `CPU6502_ORACLE_COMPAT`, which only the trace harness
+  sets; the real build follows the chip and the Klaus tests.

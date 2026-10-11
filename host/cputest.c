@@ -12,6 +12,7 @@
 #include "../main/cpu6502.h"
 
 static uint8_t mem[65536];
+static uint8_t *table[256];
 
 int main(int argc, char **argv)
 {
@@ -32,7 +33,7 @@ int main(int argc, char **argv)
 
     struct cpu6502 cpu;
     memset(&cpu, 0, sizeof cpu);
-    cpu.mem = mem;
+    cpu6502_map_flat(&cpu, mem, table);
     cpu.cmos = cmos;
     mem[0xfffc] = start & 0xff;
     mem[0xfffd] = start >> 8;
