@@ -28,15 +28,17 @@ core 0 load), from the STATS line:
 
 | disc | core 1 | core 0 |
 |---|---|---|
-| crtc-tmoyos | about 100 | 52-65% |
-| bs-wave-runner | 92 | 70% |
-| mmode7, bs-bar-beeb (teletext) | 75-79 | 79-80% |
-| bs-beebstep, bs-teletextr (loading) | 104-107 | 83-86% |
-| bs-twisted | 107 loading, effects 118-128, the twister 151 | 53-95% |
-| bs-sotc, bs-mott (VIA pollers) | 111-117 | 60% |
+| crtc-tmoyos | 85 | 60% |
+| bs-wave-runner | 100-114 | 69-86% |
+| mmode7 (teletext) | 67 | 80% |
+| bs-beebstep, bs-teletextr (loading) | 93-96 | 84-85% |
+| bs-twisted | 66-115 (the twister 102, the ending 106-115) | 56-88% |
+| bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
+| bs-patarty | 79-93 | 63% |
 
-Next: the twister in bs-twisted (151), then the SN76489 write cycle, then
-frame cases for the rest of `discs/`.
+Next: bs-twisted's divergence from beebjit (a 1770 control write), then
+core 0 on the teletext and loading screens, then the SN76489 write
+cycle, then frame cases for the rest of `discs/`.
 
 ## The budget
 
@@ -161,12 +163,12 @@ frame cases for the rest of `discs/`.
       recomputing it, and no longer steps through an event tick on the
       access cycle), loading 118-121 -> 104-107 (the 1770's drive timing
       without soft-float doubles). See decisions, "core 1 under budget".
-- [ ] bs-twisted's twister, 171 -> 151 (CRTC selects through the quiet
-      path, no reschedule after palette and R12/R13 writes). Left: 54,500
-      catch-ups per million cycles at about 260 clocks of bookkeeping
-      each, and CRTC runs cut every 11 ticks. Next: a lean catch-up for
-      writes before the sync point, and keeping the fetch run's plan
-      across a palette write. See decisions, "Twisted Brain's twister".
+- [x] bs-twisted inside the budget: the twister 171 -> 102, every part
+      of the demo 66-115 (CRTC selects through the quiet path, no
+      reschedule and a lean catch-up for palette and R12/R13 writes, and
+      the core's loop head: one bound and a lazy IRQ history). Every
+      other demo measured is 67-96. See decisions, "the core's loop
+      head was the cost".
 - [ ] bs-twisted diverges from beebjit at cycle 3,531,805 of its boot:
       a 1770 control write while drive 0 spins mid-byte; beebjit applies
       it as if after the drive tick due 13 cycles later. Find why in

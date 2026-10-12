@@ -803,3 +803,50 @@ cycle later), where 888 survives the round trip. The phase difference
 then shows 59 M cycles later as a sector read 177 cycles late. Why
 beebjit orders it that way is in its lazily synced timer countdown
 (timing.c), not yet read through.
+
+## 2026-10-12: the core's loop head was the cost; every demo inside the budget
+
+After the twister's catch-ups were cut (a lean catch-up for palette and
+R12/R13 writes before the sync point: 54,400 -> 16,000 general catch-ups
+per million cycles, 151 -> 138), the profile build was given the time
+spent below the core (writes and boundary syncs timed from the core's
+side of the call) and the CRTC time inside the lean catch-up. That left
+the 6502 core itself at 63 to 80 clocks per emulated cycle in twisted's
+heavy phases. Two things it was not: the call into the I/O path
+(timed from outside it is within 2% of the inside, so register-window
+spills are not the cost) and running from sideways RAM in PSRAM (bank 6,
+the twister's code, moved to internal RAM: no change). Nor was it the
+CRTC's per-run planning: caching the fast stretch's end across a cut run
+(proved exact against a fresh plan on every resumed run over 18 discs,
+once the line-start chain and an active cursor were excluded) gained 2
+clocks, the profile build's timers having inflated every per-run cost;
+it was not kept.
+
+It was the loop head, which runs before every 6502 instruction and
+which the compiler copies into every opcode's tail. It tested two
+bounds, appended the IRQ history with a variable shift and stored it
+back with last_sync, then tested for an interrupt and stored no_poll.
+Now there is one bound (min of the run's end and the sync point, kept
+by whoever moves the sync point), the history is brought up to date only
+where it is used (a catch-up, an access, take_interrupt) since between
+syncs the line is constant, and the one-cycle NOPs set i_poll. The
+Master's core also compiles its CMOS paths only (1-2 clocks). IRAM text
+158.3 -> 150.7 KB.
+
+Board, normal builds, core 1 clocks per emulated cycle:
+
+| disc | before this entry | now |
+|---|---|---|
+| bs-twisted, the twister | 151 | 102 |
+| bs-twisted, the B17x effect | 126 | 80-88 |
+| bs-twisted, the ending | 151 | 106-115 |
+| bs-twisted, loading | 107 | 96-103 |
+| bs-sotc | 111-117 | 77-82 |
+| bs-mott | 114-116 | 79-81 |
+| bs-beebstep, bs-teletextr (loading) | 104-107 | 93-96 |
+| crtc-tmoyos | about 100 | 85 |
+| mmode7 | 75-79 | 67 |
+| bs-patarty | 156 (first measured) | 79-93 |
+
+With core 1 in time, core 0 is now the tighter one on twisted (up to 88%
+in the 8EAx stretch) and on the teletext and loading screens (84-87%).
