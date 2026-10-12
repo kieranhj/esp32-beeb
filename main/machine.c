@@ -1096,6 +1096,36 @@ INLINE void io_schedule_quiet(struct machine *m)
         } \
     } while (0)
 #define IO_RESULT(v) ((mask & 0xfff) | (k << 12) | (n << 16) | ((uint32_t)(v) << 24))
+// The cycle after an access that cannot move the schedule.
+#define IO_AFTER_TICK_KEEP(keep) do { \
+        if (IO_LEVEL_MOVED()) { \
+            IO_TICK(); \
+        } else { \
+            k++; \
+            if (!(keep)) { \
+                machine_schedule(m); \
+            } \
+        } \
+    } while (0)
+
+// Writes that change nothing the scheduler looks at: a palette entry, and
+// the CRTC's start address (R12, R13: latched at the frame start, which
+// is a CRTC check point anyway). Not the CRTC's timing registers, the
+// ULA's clock rate or paging, which move the CRTC's next check or the
+// display write window. Twisted Brain writes the palette four times and
+// R12/R13 once each per scanline; each wrote the schedule (twice for the
+// palette) at about 360 clocks.
+INLINE int io_write_keeps_schedule(const struct machine *m, uint16_t addr)
+{
+    if ((addr & 0xfffc) == 0xfe20) {
+        return addr & 1;
+    }
+    if ((addr & 0xfff9) == 0xfe01) {
+        uint8_t r = m->crtc.addr_reg & 0x1f;
+        return r == 12 || r == 13;
+    }
+    return 0;
+}
 
 static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t addr, uint32_t cyc)
 {
@@ -1148,17 +1178,26 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
     uint64_t io0 = MACHINE_CYCLES();
     (void)io0;
     uint32_t mask, n, k = 0;
-    if ((addr & 0xffc0) == 0xfe40) {
+    // The VIAs, and the CRTC's address register (FE00, even): selecting a
+    // register touches nothing until the data access, which catches up.
+    int crtc_select = (addr & 0xfff9) == 0xfe00;
+    if ((addr & 0xffc0) == 0xfe40 || crtc_select) {
         uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2;
         if (io_quiet_window(m, cyc + t_, &mask, &n)) {
             cyc += t_;
             k += t_;
-            via_write((addr & 0x20) ? &m->usrvia : &m->sysvia, addr & 0xf, val);
+            if (crtc_select) {
+                crtc_write(&m->crtc, 0, val);
+            } else {
+                via_write((addr & 0x20) ? &m->usrvia : &m->sysvia, addr & 0xf, val);
+            }
             if (IO_LEVEL_MOVED()) {
                 IO_TICK();
             } else {
                 k++;
-                io_schedule_quiet(m);
+                if (!crtc_select) {
+                    io_schedule_quiet(m);
+                }
             }
 #ifdef MACHINE_STATS
             m->stat_clk_quiet += MACHINE_CYCLES() - io0;
@@ -1170,15 +1209,24 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         IO_SYNC_IDLE();
         IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening
     } else if (is_1mhz(addr)) {
+        int keep = io_write_keeps_schedule(m, addr);
         IO_SYNC_IDLE();
+        keep = keep && (int32_t)(cyc - m->sync_due) < 0;
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
-        IO_AFTER_TICK();
+        IO_AFTER_TICK_KEEP(keep);
     } else if (addr >= 0xfe20 && addr < 0xfe24) {
-        IO_SYNC();
+        // Before the sync point nothing has fallen due, so a write that
+        // cannot move the schedule leaves it as it was.
+        int keep = io_write_keeps_schedule(m, addr) && (int32_t)(cyc - m->sync_due) < 0;
+        {
+            uint32_t r_ = machine_advance_ex(m, cyc, !keep, 1);
+            mask = r_ & 0xffff;
+            n = r_ >> 16;
+        }
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));  // video ULA: access then tick
-        IO_AFTER_TICK();
+        IO_AFTER_TICK_KEEP(keep);
     } else {
         IO_SYNC();
         IO_TICK();
