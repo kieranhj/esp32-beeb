@@ -386,9 +386,10 @@ static void video_bench(struct vstream *vs, const char *when, int mode7)
         n++;
     }
     uint32_t words = vs->head;
-    static const char *const names[] = {"full", "all slow path"};
-    for (int variant = 0; variant < 2; variant++) {
-        render_bench_skip = variant;
+    static const char *const names[] = {"full", "all slow path", "no teletext pipeline", "no teletext pixels"};
+    static const uint8_t skips[] = {0, 1, 8, 16};
+    for (int variant = 0; variant < (mode7 ? 4 : 2); variant++) {
+        render_bench_skip = skips[variant];
         vs->tail = 0;
         r->stat_fast_words = r->stat_slow_words = 0;
         int64_t u0 = esp_timer_get_time();

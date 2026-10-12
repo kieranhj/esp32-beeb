@@ -85,10 +85,24 @@ INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra
                                 const uint8_t **p, uint32_t *stride, uint32_t *chars);
 #define CRTC_FETCH_RUN(c, ma, ra, tick, pp, pstride, pchars) \
     machine_display_run(crtc_owner(c), ma, ra, tick, pp, pstride, pchars)
+// DISPEN low: one skip word per 255 ticks in place of the tick words.
+#define CRTC_RUN_SKIP(ticks) do { \
+        uint32_t tk_ = (ticks); \
+        while (tk_ > 255) { \
+            vs_->ring[vh_ & (VS_RING - 1)] = VS_EV(VS_SKIP, 255); \
+            vh_++; \
+            tk_ -= 255; \
+        } \
+        vs_->ring[vh_ & (VS_RING - 1)] = VS_EV(VS_SKIP, tk_); \
+        vh_++; \
+    } while (0)
 #define CRTC_RUN_RENDER_CHARS(c, p, stride, chars, dispen, tick, ma13, ma, ra, data) do { \
         const uint8_t *q_ = (p); \
         uint32_t st_ = (stride), n_ = (chars); \
-        if (vs_) { \
+        if (vs_ && !(dispen)) { \
+            CRTC_RUN_SKIP(n_); \
+            data = q_[st_ * (n_ - 1)]; \
+        } else if (vs_) { \
             uint32_t fl_ = ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2); \
             uint32_t odd_ = (tick) & 1; \
             for (uint32_t k_ = 0; k_ < n_; k_++) { \
@@ -105,7 +119,10 @@ INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra
 #define CRTC_RUN_RENDER_PAIRS(c, p, stride, chars, dispen, ma13, ma, ra, data) do { \
         const uint8_t *q_ = (p); \
         uint32_t st_ = (stride), n_ = (chars); \
-        if (vs_) { \
+        if (vs_ && !(dispen)) { \
+            CRTC_RUN_SKIP(2 * n_); \
+            data = q_[st_ * (n_ - 1)]; \
+        } else if (vs_) { \
             uint32_t fl_ = VS_PAIR | ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2); \
             for (uint32_t k_ = 0; k_ < n_; k_++) { \
                 data = *q_; \

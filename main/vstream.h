@@ -27,6 +27,12 @@
 //                     teletext bit change); beebjit clears its canvas at
 //                     the next flyback after one, and the host renderer
 //                     copies that for the frame diff
+//          VS_SKIP    payload = a run of 1 to 255 ticks with DISPEN low,
+//                     from the CRTC's fast path in place of that many
+//                     tick words (a third of a line is blanking): the
+//                     beam moves, pixels inside the window are black,
+//                     the bytes are not needed (the teletext pipeline
+//                     forces them and decodes nothing)
 //
 // The producer writes into a ring of VS_RING words; the consumer reads at
 // its own pace. On the board the ring is in internal SRAM and the consumer
@@ -54,6 +60,7 @@ enum {
     VS_ULAPAL = 0x86,
     VS_FRAME = 0x87,
     VS_FRAMING = 0x88,   // a CRTC R0-R9 write or ULA clock/teletext change
+    VS_SKIP = 0x89,      // payload: ticks with DISPEN low
 };
 #define VS_EV(type, payload) ((uint16_t)((type) | ((payload) << 8)))
 

@@ -98,6 +98,9 @@ static void consume(struct render *r, struct vstream *vs)
         if ((w & VS_EVENT) && stream_ticks >= dump_lo && stream_ticks < dump_hi) {
             fprintf(stderr, "t%llu %04x" "\n", stream_ticks, w);
         }
+        if ((w & 0xff) == VS_SKIP) {
+            stream_ticks += w >> 8;
+        }
         if (!(w & VS_EVENT)) {
             // A run of ticks goes through the renderer's fast path, as on
             // the board, so the frame tests cover it.
