@@ -38,7 +38,7 @@ struct machine {
     uint32_t stat_sync_boundary, stat_sync_write, stat_sync_io;
     uint32_t stat_due_hist[17];
     uint32_t stat_due_src[8];
-    uint64_t stat_clk_advance, stat_clk_crtc, stat_clk_via, stat_clk_fdc, stat_clk_io, stat_clk_due, stat_clk_quiet;   // MACHINE_CYCLES()
+    uint64_t stat_clk_advance, stat_clk_crtc, stat_clk_via, stat_clk_fdc, stat_clk_io, stat_clk_due, stat_clk_quiet, stat_clk_wr_outer, stat_clk_sync_outer;   // MACHINE_CYCLES()
     uint64_t stat_clk_sheila[8];   // register handling alone, by (addr >> 4) & 7 within SHEILA
     uint32_t stat_io_page[8];
     uint32_t stat_io_ticks, stat_zero_calls;   // IO_TICK advance calls; calls with nothing to run

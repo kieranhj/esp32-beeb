@@ -36,18 +36,22 @@ struct cpu6502 {
     // NMI edge. An IRQ is taken after an instruction if the line was
     // asserted two cycles before its end (the chip polls before the
     // penultimate cycle) and I was clear at the instruction start (RTI: as
-    // pulled); i_poll is that I value, no_poll marks the one-cycle NOPs.
+    // pulled); i_poll is that I value (the one-cycle NOPs set it, as they
+    // are not polled).
     uint8_t irq_line;
     uint8_t nmi_pending;
     uint32_t nmi_cycle;   // cycle the NMI edge was latched on
     uint32_t stretch;     // 1 MHz stretch cycles in the current instruction
-    uint32_t irq_hist;
-    uint8_t i_poll, no_poll;
+    uint32_t irq_hist;    // as of last_sync: the line has been irq_line since
+    uint8_t i_poll;
     // Cycle count at which the machine next has an event that can change
     // the IRQ line or needs exact ordering; until then the instruction
     // boundary needs no catch-up and the history is just the current level
-    // repeated for the cycles since the last catch-up (last_sync).
+    // repeated for the cycles since the last catch-up (last_sync). stop is
+    // the earlier of sync_due and the end of the run, the loop's one test;
+    // whoever moves sync_due sets it through cpu6502_set_sync_due().
     uint32_t sync_due, last_sync;
+    uint32_t stop, run_end;
     // Writes to addresses in [wlo, whi] need a catch-up first: that is the
     // display memory the CRTC will fetch before sync_due. The machine sets
     // it; 0..0xFFFF means every RAM write syncs.

@@ -56,6 +56,15 @@
 
 #define INLINE static inline __attribute__((always_inline))
 
+// A machine with one CPU type defines CPU6502_CMOS_ONLY (1 or 0) and the
+// type checks and the other type's paths compile away; otherwise cpu->cmos
+// decides at run time (the Klaus harness tests both).
+#ifdef CPU6502_CMOS_ONLY
+#define IS_CMOS(cpu) (CPU6502_CMOS_ONLY)
+#else
+#define IS_CMOS(cpu) ((cpu)->cmos)
+#endif
+
 // ---- bus -------------------------------------------------------------------
 
 // One bus cycle. The machine is not stepped here (see CPU6502_SYNC).
@@ -103,7 +112,6 @@ INLINE uint8_t fetch_opcode(struct cpu6502 *cpu)
     cpu->rd_tab = cpu->rd_tabs[sel];
     cpu->wr_tab = cpu->wr_tabs[sel];
     cpu->i_poll = cpu->i;
-    cpu->no_poll = 0;
     CPU6502_TRACE(cpu);
     return fetch(cpu);
 }
@@ -189,7 +197,7 @@ INLINE uint16_t am_absi_r(struct cpu6502 *cpu, uint8_t idx)
     uint16_t base = am_abs(cpu);
     uint16_t ea = base + idx;
     if ((ea ^ base) & 0xff00) {
-        if (cpu->cmos) {
+        if (IS_CMOS(cpu)) {
             idle(cpu);
         } else {
             (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
@@ -204,7 +212,7 @@ INLINE uint16_t am_absi_w(struct cpu6502 *cpu, uint8_t idx)
 {
     uint16_t base = am_abs(cpu);
     uint16_t ea = base + idx;
-    if (cpu->cmos) {
+    if (IS_CMOS(cpu)) {
         if ((ea ^ base) & 0xff00) {
             idle(cpu);
         } else {
@@ -232,7 +240,7 @@ INLINE uint16_t am_izy_r(struct cpu6502 *cpu)
     uint16_t base = lo | (rd(cpu, (uint8_t)(zp + 1)) << 8);
     uint16_t ea = base + cpu->y;
     if ((ea ^ base) & 0xff00) {
-        if (cpu->cmos) {
+        if (IS_CMOS(cpu)) {
             idle(cpu);
         } else {
             (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
@@ -247,7 +255,7 @@ INLINE uint16_t am_izy_w(struct cpu6502 *cpu)
     uint16_t lo = rd(cpu, zp);
     uint16_t base = lo | (rd(cpu, (uint8_t)(zp + 1)) << 8);
     uint16_t ea = base + cpu->y;
-    if (cpu->cmos) {
+    if (IS_CMOS(cpu)) {
         idle(cpu);
     } else {
         (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
@@ -295,12 +303,12 @@ INLINE void op_adc(struct cpu6502 *cpu, uint8_t m)
         cpu->c = r >= 0x100;
         cpu->a = (uint8_t)r;
 #ifdef CPU6502_ORACLE_COMPAT
-        if (cpu->cmos) {
+        if (IS_CMOS(cpu)) {
             idle(cpu);
         }
         cpu->z = ((bin & 0xff) == 0);  // beebjit: NMOS flag rules on CMOS
 #else
-        if (cpu->cmos) {
+        if (IS_CMOS(cpu)) {
             idle(cpu);
             set_nz(cpu, cpu->a);
         } else {
@@ -322,7 +330,7 @@ INLINE void op_sbc(struct cpu6502 *cpu, uint8_t m)
     set_nz(cpu, res);
     if (!cpu->d) {
         cpu->a = res;
-    } else if (cpu->cmos) {
+    } else if (IS_CMOS(cpu)) {
         // 65C02: adjust the whole byte first, then the low nibble, which
         // matters for operands that are not valid BCD. N and Z come from
         // the decimal result, and there is an extra cycle.
@@ -429,7 +437,7 @@ INLINE uint8_t op_trb(struct cpu6502 *cpu, uint8_t m)
 // CMOS: read, read again, write new.
 INLINE void rmw_tail(struct cpu6502 *cpu, uint16_t ea, uint8_t m)
 {
-    if (cpu->cmos) {
+    if (IS_CMOS(cpu)) {
         (void)rd(cpu, ea);
     } else {
         wr(cpu, ea, m);
@@ -450,7 +458,7 @@ INLINE uint16_t am_absx_rmw(struct cpu6502 *cpu, int six_cycle)
 {
     uint16_t base = am_abs(cpu);
     uint16_t ea = base + cpu->x;
-    if (!cpu->cmos) {
+    if (!IS_CMOS(cpu)) {
         (void)rd(cpu, (base & 0xff00) | (ea & 0xff));
     } else if ((ea ^ base) & 0xff00) {
         idle(cpu);
@@ -470,7 +478,7 @@ INLINE void branch(struct cpu6502 *cpu, int taken)
     uint16_t npc = old + off;
     (void)rd(cpu, old);  // dummy read of the next opcode
     if ((npc ^ old) & 0xff00) {
-        if (cpu->cmos) {
+        if (IS_CMOS(cpu)) {
             idle(cpu);
         } else {
             (void)rd(cpu, (old & 0xff00) | (npc & 0xff));
@@ -487,7 +495,7 @@ INLINE void interrupt(struct cpu6502 *cpu, uint16_t vec, int b)
     push(cpu, pack_p(cpu, b));
     cpu->i = 1;
     cpu->i_poll = 1;  // beebjit: no IRQ straight after BRK or an interrupt
-    if (cpu->cmos) {
+    if (IS_CMOS(cpu)) {
         cpu->d = 0;
     }
     uint16_t lo = rd(cpu, vec);
@@ -521,7 +529,6 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->stretch = 0;
     cpu->irq_hist = 0;
     cpu->i_poll = 1;
-    cpu->no_poll = 0;
     cpu->sync_due = 0;
     cpu->last_sync = 0;
     cpu->wlo = 0;
@@ -529,6 +536,23 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->rd_tab = cpu->rd_tabs[0];
     cpu->wr_tab = cpu->wr_tabs[0];
     cpu->pc = vec[0xfc] | (vec[0xfd] << 8);
+}
+
+// The machine moved the sync point (a catch-up, an access).
+INLINE void cpu6502_set_sync_due(struct cpu6502 *cpu, uint32_t due)
+{
+    cpu->sync_due = due;
+    cpu->stop = ((int32_t)(due - cpu->run_end) < 0) ? due : cpu->run_end;
+}
+
+// The history brought up to the current cycle: the line has held irq_line
+// since last_sync.
+INLINE void cpu_hist_update(struct cpu6502 *cpu)
+{
+    uint32_t n = cpu->cyc - cpu->last_sync;
+    uint32_t fill = cpu->irq_line ? 0xffffffffu : 0;
+    cpu->irq_hist = (n >= 16) ? fill : ((cpu->irq_hist << n) | (fill & ((1u << n) - 1)));
+    cpu->last_sync = cpu->cyc;
 }
 
 // Bit 2 of the history is the IRQ line two cycles before the instruction's
@@ -540,8 +564,9 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
 // Returns 1 if an interrupt sequence ran.
 static CPU6502_CODE_ATTR __attribute__((noinline)) int take_interrupt(struct cpu6502 *cpu)
 {
+    cpu_hist_update(cpu);
     int nmi_polled = cpu->nmi_pending && (int32_t)(cpu->cyc - cpu->stretch - cpu->nmi_cycle) >= 2;
-    if (!nmi_polled && !((cpu->irq_hist & 4) && !cpu->i_poll && !cpu->no_poll)) {
+    if (!nmi_polled && !((cpu->irq_hist & 4) && !cpu->i_poll)) {
         return 0;
     }
     int take_nmi = cpu->nmi_pending;
@@ -618,26 +643,30 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         T16(f0, f1, f2, nop1, nopzpx, f5, f6, nop1, f8, f9, fa, nop1, nopabs, fd, fe, nop1)
     };
 #undef T16
-    void *const *dispatch = cpu->cmos ? cmos_table : nmos_table;
+    void *const *dispatch = IS_CMOS(cpu) ? cmos_table : nmos_table;
 
 
 
 #define OPC(h) op_##h:
 #define NEXT continue
 
-    while ((int32_t)(end - cpu->cyc) > 0) {
-        if ((int32_t)(cpu->cyc - cpu->sync_due) >= 0) {
+    cpu->run_end = end;
+    cpu6502_set_sync_due(cpu, cpu->sync_due);
+    for (;;) {
+        // One test per instruction: the end of the run or the sync point.
+        if ((int32_t)(cpu->cyc - cpu->stop) >= 0) {
+            if ((int32_t)(cpu->cyc - end) >= 0) {
+                break;
+            }
             CPU6502_SYNC(cpu);
-        } else {
-            uint32_t n = cpu->cyc - cpu->last_sync;
-            uint32_t fill = cpu->irq_line ? 0xffffffffu : 0;
-            cpu->irq_hist = (n >= 16) ? fill : ((cpu->irq_hist << n) | (fill & ((1u << n) - 1)));
-            cpu->last_sync = cpu->cyc;
         }
         // Interrupt decision for the instruction that just finished. The
         // test here must stay tiny: this loop head is duplicated into every
-        // opcode's tail by the compiler, so the rest is out of line.
-        if (((cpu->irq_hist & 4) | cpu->nmi_pending) && take_interrupt(cpu)) {
+        // opcode's tail by the compiler, so the rest is out of line. The
+        // history is kept lazily: bit 2 can only be set if the line is
+        // high or was within the last three cycles of the history, and
+        // take_interrupt brings it up to date before deciding.
+        if ((cpu->nmi_pending || ((cpu->irq_line || (cpu->irq_hist & 7)) && !cpu->i_poll)) && take_interrupt(cpu)) {
             continue;
         }
 
@@ -877,7 +906,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         OPC(4c) cpu->pc = am_abs(cpu); NEXT;
         OPC(6c)
             ea = am_abs(cpu);
-            if (cpu->cmos) {
+            if (IS_CMOS(cpu)) {
                 idle(cpu);
                 t = rd(cpu, ea);
                 cpu->pc = t | (rd(cpu, ea + 1) << 8);
@@ -923,7 +952,7 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             NEXT;
 
         // ---- CMOS defined NOPs ----
-        OPC(nop1) cpu->no_poll = 1; NEXT;
+        OPC(nop1) cpu->i_poll = 1; NEXT;   // not polled: no IRQ after it
         OPC(nop2) (void)fetch(cpu); NEXT;
         OPC(nopzp) (void)rd(cpu, am_zp(cpu)); NEXT;
         OPC(nopzpx) (void)rd(cpu, am_zpi(cpu, cpu->x)); NEXT;

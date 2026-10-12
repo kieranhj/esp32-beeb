@@ -533,7 +533,7 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
 static MACHINE_NOINLINE void machine_crtc_catch_up(struct machine *m)
 {
     while (m->crtc_synced != m->synced) {
-        m->crtc_synced += crtc_run(&m->crtc, m->crtc_synced, m->synced - m->crtc_synced);
+        STAT_CLK(m->stat_clk_crtc, m->crtc_synced += crtc_run(&m->crtc, m->crtc_synced, m->synced - m->crtc_synced));
         if (m->crtc.vsync_changed) {
             STAT(m->stat_crtc_deferred_vsync);
         }
@@ -1271,6 +1271,7 @@ static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
 #define CPU6502_IO_RD(cpu, addr) machine_io_rd(cpu, addr)
 #define CPU6502_IO_WR(cpu, addr, v) machine_io_wr(cpu, addr, v)
 #define CPU6502_CODE_ATTR MACHINE_CODE_ATTR
+#define CPU6502_CMOS_ONLY 1   // the Master's 65C12
 #include "cpu6502.c"
 
 // Out of line: it runs at events, not per instruction, and the core's
@@ -1280,8 +1281,11 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
 {
     struct machine *m = cpu->m;
     STAT(m->stat_sync_boundary);
+#ifdef MACHINE_STATS
+    uint64_t s0_ = MACHINE_CYCLES();
+#endif
     if (machine_profile_skip & 4) {
-        cpu->sync_due = cpu->cyc + 1000000;  // measurement: core alone
+        cpu6502_set_sync_due(cpu, cpu->cyc + 1000000);  // measurement: core alone
         return;
     }
     uint32_t r = machine_sync(m, cpu->cyc);
@@ -1292,10 +1296,13 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
         cpu->nmi_pending = 1;
         cpu->nmi_cycle = m->nmi_cycle;
     }
-    cpu->sync_due = m->sync_due;
+    cpu6502_set_sync_due(cpu, m->sync_due);
     cpu->last_sync = cpu->cyc;
     cpu->wlo = m->wlo;
     cpu->whi = m->whi;
+#ifdef MACHINE_STATS
+    m->stat_clk_sync_outer += MACHINE_CYCLES() - s0_;
+#endif
 }
 
 // Slow path results: bits 0-11 history, 12-15 stretch cycles to add to the
@@ -1313,7 +1320,7 @@ INLINE void machine_io_apply(struct cpu6502 *cpu, uint32_t r)
     cpu->stretch += k - 1;
     cpu->irq_hist = (cpu->irq_hist << ((r >> 16) & 0xff)) | (r & 0xfff);
     cpu->irq_line = r & 1;
-    cpu->sync_due = m->sync_due;   // an NMI edge makes this the next boundary
+    cpu6502_set_sync_due(cpu, m->sync_due);   // an NMI edge makes this the next boundary
     cpu->last_sync = cpu->cyc;
     cpu->wlo = m->wlo;
     cpu->whi = m->whi;
@@ -1328,8 +1335,14 @@ INLINE uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr)
 
 INLINE void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val)
 {
+#ifdef MACHINE_STATS
+    uint64_t c0_ = MACHINE_CYCLES();
+#endif
     uint32_t r = machine_io_wr_slow((struct machine *)cpu->m, addr, cpu->cyc, val);
     machine_io_apply(cpu, r);
+#ifdef MACHINE_STATS
+    ((struct machine *)cpu->m)->stat_clk_wr_outer += MACHINE_CYCLES() - c0_;
+#endif
 }
 
 // ---- lifecycle --------------------------------------------------------------
