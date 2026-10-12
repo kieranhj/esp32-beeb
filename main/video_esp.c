@@ -471,6 +471,31 @@ void video_event_stats(uint32_t *tables, uint32_t *ulactrl, uint32_t *ulapal, ui
     s_render.stat_tables = s_render.stat_ulactrl = s_render.stat_ulapal = s_render.stat_events = 0;
 }
 
+void video_event_profile(void)
+{
+    static const char *const names[16] = {"tick", "hsync", "vsync", "ra", "cursor", "ulactrl", "ulapal", "frame",
+                                          "framing", "skip", "?", "?", "?", "?", "?", "?"};
+    {
+        struct teletext *tt = &s_render.teletext;
+        printf("MODE %d 2mhz %d cpl %d teletext %d; TTRUN calls %lu (not settled %lu) words %lu controls %lu, %lu clk/word\n",
+               s_render.mode, s_render.is_clock_2mhz, s_render.chars_per_line, s_render.is_teletext,
+               (unsigned long)tt->stat_run_calls, (unsigned long)tt->stat_run_zero, (unsigned long)tt->stat_run_words,
+               (unsigned long)tt->stat_run_controls,
+               (unsigned long)(tt->stat_run_words ? s_render.stat_clk_ttrun / tt->stat_run_words : 0));
+        tt->stat_run_calls = tt->stat_run_zero = tt->stat_run_words = tt->stat_run_controls = 0;
+        s_render.stat_clk_ttrun = 0;
+    }
+    printf("EVENTS");
+    for (int i = 0; i < 16; i++) {
+        if (s_render.stat_ev_n[i]) {
+            printf(" %s %lu x %lu", names[i], (unsigned long)s_render.stat_ev_n[i],
+                   (unsigned long)(s_render.stat_ev_clk[i] / s_render.stat_ev_n[i]));
+        }
+        s_render.stat_ev_n[i] = s_render.stat_ev_clk[i] = 0;
+    }
+    printf("\n");
+}
+
 void video_clk_stats(uint32_t *tables, uint32_t *slow)
 {
     *tables = s_render.stat_clk_tables;

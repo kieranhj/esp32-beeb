@@ -36,6 +36,7 @@ extern volatile int video_test_mode;
 // Renderer path counts since the last call (fast run words, slow words).
 void video_path_stats(uint32_t *fast, uint32_t *slow);
 void video_event_stats(uint32_t *tables, uint32_t *ulactrl, uint32_t *ulapal, uint32_t *events);
-void video_clk_stats(uint32_t *tables, uint32_t *slow);   // cycles spent, since last call
+void video_clk_stats(uint32_t *tables, uint32_t *slow);
+void video_event_profile(void);   // prints slow words by type, count x clocks each   // cycles spent, since last call
 
 #endif

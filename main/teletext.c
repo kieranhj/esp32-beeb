@@ -478,7 +478,9 @@ TT_API uint32_t teletext_run(struct teletext *t, const uint16_t *ring, uint32_t 
     // Settled DISPEN pipeline only (two words after DISPEN rises): then no
     // byte is forced, every byte decodes, the cell is not blank and the end
     // of line cannot be detected inside the run.
+    t->stat_run_calls++;
     if (t->dispen_pipe != 7) {
+        t->stat_run_zero++;
         return 0;
     }
     const uint32_t want = VS_PAIR | VS_DISPEN | VS_MA13;
@@ -515,6 +517,7 @@ TT_API uint32_t teletext_run(struct teletext *t, const uint16_t *ring, uint32_t 
             rfg = fg;
         } else {
             // A control code: the general path, then the locals again.
+            t->stat_run_controls++;
             t->data_pipe = dp;
             t->render_character = rc;
             t->held_character = held;
@@ -540,6 +543,7 @@ TT_API uint32_t teletext_run(struct teletext *t, const uint16_t *ring, uint32_t 
             glyph_row16(src + off1, next_out + 16 * i, rfg, bg);
         }
     }
+    t->stat_run_words += i;
     if (i) {
         // What teletext_data and teletext_render_pair leave behind.
         t->data_pipe = dp;

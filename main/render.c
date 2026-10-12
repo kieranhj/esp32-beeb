@@ -485,8 +485,11 @@ static RENDER_FN void render_skip(struct render *r, uint32_t ticks)
         return;
     }
     struct teletext *tt = &r->teletext;
+    // Three idle calls bring the pipeline to its fixed point (data pipe
+    // 0x4040, DISPEN pipe 0, nothing decoded, the end of line past), and
+    // idle_calls counts consecutive ones: an earlier skip often did it.
     uint32_t calls = ticks < 3 ? ticks : 3;
-    for (uint32_t i = 0; i < calls; i++) {
+    for (uint32_t i = 0; i < calls && tt->idle_calls < 3; i++) {
         teletext_data(tt, 0, 0, TT_DECODE(r->mode == RENDER_MODE7));
     }
     while (ticks) {
@@ -515,23 +518,31 @@ static RENDER_FN void render_skip(struct render *r, uint32_t ticks)
         }
         // Outside the window: the beam advances until it re-enters the
         // window or the forced hsync.
+        // By arithmetic: the tick the beam's cell reaches the window start,
+        // the tick it reaches the forced hsync, whichever is first (the
+        // window start wins a tie, as in the per-tick order).
         int32_t horiz = r->horiz_beam_pos;
-        while (ticks) {
-            horiz += 8;
-            ticks--;
-            if ((horiz & ~7) == r->horiz_window_start) {
-                r->horiz_beam_pos = horiz;
-                reset_render_pos(r);
-                break;
-            }
-            if (horiz >= 1536) {
-                r->horiz_beam_pos = horiz;
-                do_hsync(r, 0);
-                break;
-            }
+        int32_t cell = horiz & ~7;
+        uint32_t k_ws = 0xffffffffu, k_hs = 0xffffffffu;
+        if (cell < r->horiz_window_start) {
+            k_ws = (uint32_t)(r->horiz_window_start - cell) / 8;
         }
-        if (ticks == 0 || r->render_pos > RENDER_WIDTH - 8) {
+        if (horiz < 1536) {
+            k_hs = (uint32_t)(1536 - horiz + 7) / 8;
+        }
+        if (k_ws <= k_hs && k_ws <= ticks) {
+            horiz += 8 * (int32_t)k_ws;
+            ticks -= k_ws;
             r->horiz_beam_pos = horiz;
+            reset_render_pos(r);
+        } else if (k_hs <= ticks) {
+            horiz += 8 * (int32_t)k_hs;
+            ticks -= k_hs;
+            r->horiz_beam_pos = horiz;
+            do_hsync(r, 0);
+        } else {
+            r->horiz_beam_pos = horiz + 8 * (int32_t)ticks;
+            ticks = 0;
         }
         r->stat_fast_words++;
     }
@@ -641,7 +652,13 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
             r->stat_slow_words++;
             uint32_t c0 = RENDER_CYCLES();
             render_word(r, w);
-            r->stat_clk_slow += RENDER_CYCLES() - c0;
+            uint32_t dc = RENDER_CYCLES() - c0;
+            r->stat_clk_slow += dc;
+            {
+                int ty = (w & VS_EVENT) ? (w & 15) : 0;
+                r->stat_ev_n[ty]++;
+                r->stat_ev_clk[ty] += dc;
+            }
             continue;
         }
         const int dispen = (w & VS_DISPEN) != 0;
@@ -782,18 +799,33 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
 #undef RUN_2MHZ
 #undef RUN_1MHZ
         }
-        if (mode7 && !blank && pos == pos0 && !(all_slow & 24) && run_flags == (VS_DISPEN | VS_MA13)) {
-            // Teletext characters in bulk: the fused run with its state in
-            // locals. What it does not take (DISPEN pipeline still
-            // settling) goes through the per-word loop below.
+        if (mode7 && !blank && pos == pos0) {
+            // Teletext characters, one pair word each. In bulk through the
+            // fused run (state in locals) whenever it will take them; one
+            // word at a time while the DISPEN pipeline settles, or for the
+            // boot bench's split variants, then back to the run.
+            const int fused_ok = !(all_slow & 24) && run_flags == (VS_DISPEN | VS_MA13);
             while ((w & VS_PAIR) && pos <= RENDER_WIDTH - 16) {
-                uint32_t kmax = (uint32_t)(RENDER_WIDTH - pos) / 16;
-                if (kmax > (uint32_t)n) {
-                    kmax = (uint32_t)n;
+                uint32_t c = 0;
+                if (fused_ok) {
+                    uint32_t kmax = (uint32_t)(RENDER_WIDTH - pos) / 16;
+                    if (kmax > (uint32_t)n) {
+                        kmax = (uint32_t)n;
+                    }
+                    uint32_t rc0 = RENDER_CYCLES();
+                    c = teletext_run(tt, vs->ring, VS_RING - 1, t, kmax, line + pos, line2 + pos, want2);
+                    r->stat_clk_ttrun += RENDER_CYCLES() - rc0;
                 }
-                uint32_t c = teletext_run(tt, vs->ring, VS_RING - 1, t, kmax, line + pos, line2 + pos, want2);
                 if (c == 0) {
-                    break;
+                    // (render_bench_skip bits 3 and 4 drop the pipeline or the
+                    // pixels for the boot-time bench's split.)
+                    if (!(all_slow & 8)) {
+                        teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, TT_DECODE(1));
+                    }
+                    if (!(all_slow & 16)) {
+                        teletext_render_pair(tt, line + pos, line2 + pos, want2);
+                    }
+                    c = 1;
                 }
                 pos += 16 * (int32_t)c;
                 horiz += 16 * (int32_t)c;
@@ -808,36 +840,16 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                 }
             }
         }
-        if (mode7 && !blank && n > 0 && pos <= RENDER_WIDTH - 8 && !(w & VS_EVENT) &&
-            (w & (VS_DISPEN | VS_MA13)) == run_flags) {
-            // Teletext characters: the pipeline then both ticks' pixels,
-            // one pair word per character (a lone tick goes below).
-            while ((w & VS_PAIR) && pos <= RENDER_WIDTH - 16) {
-                // (render_bench_skip bits 3 and 4 drop the pipeline or the
-                // pixels for the boot-time bench's split.)
-                if (!(all_slow & 8)) {
-                    teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, TT_DECODE(1));
-                }
-                if (!(all_slow & 16)) {
-                    teletext_render_pair(tt, line + pos, line2 + pos, want2);
-                }
-                pos += 16;
-                horiz += 16;
-                t++;
-                n--;
-                if (n <= 0 || pos > RENDER_WIDTH - 8) {
-                    break;
-                }
-                w = vs->ring[t & (VS_RING - 1)];
-                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) {
-                    break;
-                }
-            }
-        }
         if (pos == pos0) do {
             uint8_t data = (uint8_t)(w >> 8);
             int odd = w & VS_ODD;
             if (w & VS_PAIR) {
+                // Teletext pairs after some single ticks (the DISPEN
+                // settling at the start of a line): hand back so the outer
+                // loop takes them through the mode 7 run.
+                if (mode7 && pos != pos0) {
+                    break;
+                }
                 // A whole 1 MHz character. At the right edge, or if the
                 // renderer thinks the clock is 2 MHz, the slow path does
                 // it as two ticks.

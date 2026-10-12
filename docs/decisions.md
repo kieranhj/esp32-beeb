@@ -668,3 +668,29 @@ task (5), which keeps core 0 busy 95% of the time. It runs at 7 now and
 polls a steady 50 times a second. Swipes came out as taps because they
 were looked for along native x; with the panel in its native
 orientation the picture's long side is the touch controller's y.
+
+## 2026-10-12: mode 7, a fused run, and the loops that kept work from it
+
+`teletext_run` renders a run of character words with the SAA5050 state in
+locals: a printable byte is a pipe shift, a glyph pointer and two glyph
+rows (bg ^ (mask & (fg ^ bg)) a word); a control code writes the state
+back, takes `do_data_byte` and reloads. It needs the DISPEN pipeline
+settled, so the first word of a line goes the old way.
+
+On the boot bench it took mode 7 from 190 to 133 clocks a word at once;
+on mmode7 nothing changed, and the profile (an EVENTS / TTRUN line every
+5 s, counts and clocks by event type and for the run) showed why: the
+run saw 0.4% of the characters. Two loops in front of it held on to
+them. A line's first characters arrive as single ticks while DISPEN
+settles (the CRTC fast path steps those exactly), the general loop
+took them and, the flags being the same, carried on through every pair
+of the line; and the per-word mode 7 loop, once it had taken the first
+word, never handed back. Both now return to the run. mmode7: core 0
+99% -> 80%, the run taking 2.2 M words per 5 s at 112 clocks each; the
+lag is steady. Skip words got cheaper on the way (the teletext pipeline
+is not fed once it is at its fixed point, and the beam crosses the
+blanking by arithmetic): 472 -> 380 clocks.
+
+Where core 0 goes on mmode7 now, per second: the run about 21%, hsync
+26% (most of it the scaler, about 2.6 K clocks a panel row with the
+strided stores of the rotated band), skips 6%, queueing bands 6%.

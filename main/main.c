@@ -267,6 +267,7 @@ static void beeb_task(void *arg)
             video_event_stats(&rtables, &rctrl, &rpal, &revents);
             uint32_t ctab, cslow;
             video_clk_stats(&ctab, &cslow);
+            video_event_profile();
             printf("VIDEO events %lu ulactrl %lu ulapal %lu table rebuilds %lu (%lu us) slow words %lu us\n",
                    (unsigned long)revents, (unsigned long)rctrl, (unsigned long)rpal, (unsigned long)rtables,
                    (unsigned long)(ctab / 240), (unsigned long)(cslow / 240));

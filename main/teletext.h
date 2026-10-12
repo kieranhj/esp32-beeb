@@ -51,6 +51,7 @@ struct teletext {
     const uint8_t *row_glyph2;     // and for the second
     render_px row_fg, row_bg;
     int row_blank;
+    uint32_t stat_run_words, stat_run_controls, stat_run_calls, stat_run_zero;   // teletext_run profile
 };
 
 // The per-tick entry points are compiled into the renderer's translation

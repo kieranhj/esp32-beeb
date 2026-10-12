@@ -85,6 +85,8 @@ struct render {
     uint32_t stat_fast_words, stat_slow_words;   // render_consume_n paths taken
     uint32_t stat_tables, stat_ulactrl, stat_ulapal, stat_events;   // rebuilds and events seen
     uint32_t stat_clk_tables, stat_clk_slow, stat_clk_runs;         // RENDER_CYCLES() in each
+    uint32_t stat_ev_n[16], stat_ev_clk[16];
+    uint32_t stat_clk_ttrun;   // cycles inside teletext_run   // slow words by event type (low nibble; 0 = a tick)
 };
 
 void render_init(struct render *r, render_px *buffer);
