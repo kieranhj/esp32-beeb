@@ -1210,16 +1210,29 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening
     } else if (is_1mhz(addr)) {
         int keep = io_write_keeps_schedule(m, addr);
-        IO_SYNC_IDLE();
-        keep = keep && (int32_t)(cyc - m->sync_due) < 0;
+        uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2;
+        if (keep && io_quiet_window(m, cyc + t_, &mask, &n)) {
+            // Nothing falls due before the access: the VIAs by
+            // subtraction and the CRTC run up to it, without the
+            // general catch-up's event bookkeeping.
+            machine_crtc_catch_up(m);
+            cyc += t_;
+            k += t_;
+        } else {
+            IO_SYNC_IDLE();
+            keep = keep && (int32_t)(cyc - m->sync_due) < 0;
+        }
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
         IO_AFTER_TICK_KEEP(keep);
     } else if (addr >= 0xfe20 && addr < 0xfe24) {
         // Before the sync point nothing has fallen due, so a write that
         // cannot move the schedule leaves it as it was.
-        int keep = io_write_keeps_schedule(m, addr) && (int32_t)(cyc - m->sync_due) < 0;
-        {
+        int keep = io_write_keeps_schedule(m, addr);
+        if (keep && io_quiet_window(m, cyc, &mask, &n)) {
+            machine_crtc_catch_up(m);   // as above
+        } else {
+            keep = keep && (int32_t)(cyc - m->sync_due) < 0;
             uint32_t r_ = machine_advance_ex(m, cyc, !keep, 1);
             mask = r_ & 0xffff;
             n = r_ >> 16;
