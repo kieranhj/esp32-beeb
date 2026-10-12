@@ -621,3 +621,29 @@ behind real time the audio waits with it. The host harness
 (27 bytes, 523 Hz for 0.28 s after the power-on blast) and patarty's
 tune come out as expected. Nobody has listened on the board yet; the
 codec opens and the samples flow.
+
+## 2026-10-12: input, and two boot failures it exposed
+
+Input is the least that plays a demo: touch holds Space, a long press
+adds Return, a swipe changes disc (`main/input.c`). The CST820 is read
+directly over I2C (register 0x00: fingers in byte 2, x and y in bytes 3
+to 6), the PWR button through the TCA9554 expander's EXIO4 as FluidBox
+does. Keys reach the machine through the same cycle-stamped queue the
+frame tests use, 1 ms ahead of the machine; the queue now restarts when
+drained so live input never runs out of slots.
+
+Two failures appeared with it, neither caused by it:
+
+- esp_partition_mmap of the disc bundle returned data-bus addresses
+  inside the range the PSRAM heap occupies (0x3c810000 with the pool
+  running to 0x3c890000 on one build, just past it on another). The
+  flash pages replaced PSRAM pages under the heap and the next heap walk
+  faulted. It only showed once an NVS read walked the heap (after the
+  console stored a volume). The bundle is now read, not mapped: the
+  directory into internal RAM, an image into PSRAM while its pulses are
+  built.
+- The machine task's 16 KB stack no longer fitted in the internal heap
+  (24 KB free, the largest block 15 KB, after the third band buffer,
+  the codec and three more tasks) and xTaskCreatePinnedToCore failed
+  silently. Its stack and TCB are static now; 18 KB of internal heap is
+  left once everything runs.

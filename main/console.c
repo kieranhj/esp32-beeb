@@ -53,7 +53,7 @@ static void set_volume(int vol)
     sound_set_volume(vol);
 }
 
-static void set_disc(const char *name)
+void console_set_disc(const char *name)
 {
     nvs_handle_t h;
     if (nvs_open("beeb", NVS_READWRITE, &h) != ESP_OK) {
@@ -91,7 +91,7 @@ static void command(char *line)
             printf("console: no disc called '%s' in the bundle\n", arg);
             return;
         }
-        set_disc(arg);
+        console_set_disc(arg);
         printf("console: booting %s\n", arg);
         fflush(stdout);
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -141,5 +141,5 @@ void console_start(void)
         ESP_LOGW(TAG, "usb serial jtag driver: %s", esp_err_to_name(err));
         return;
     }
-    xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(console_task, "console", 3072, NULL, 2, NULL, 0);
 }

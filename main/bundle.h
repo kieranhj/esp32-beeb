@@ -14,14 +14,13 @@ struct bundle_entry {
     uint8_t pad[3];
 };
 
-// Finds the partition and maps its directory; ESP_ERR_NOT_FOUND if there
-// is no bundle. (The whole 12 MB cannot be mapped at once: the data MMU
-// has PSRAM in it; an image is mapped while it is read.)
+// Finds the partition and reads its directory; ESP_ERR_NOT_FOUND if there
+// is no bundle.
 esp_err_t bundle_open(void);
 int bundle_count(void);
 const struct bundle_entry *bundle_entry(int i);
 int bundle_find(const char *name);                       // index, or -1
-// Maps one image for reading; NULL if it cannot be. Unmap it after use.
+// Reads one image into PSRAM; NULL if it cannot. Release it after use.
 const uint8_t *bundle_map(const struct bundle_entry *e);
 void bundle_unmap(void);
 

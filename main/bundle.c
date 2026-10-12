@@ -1,13 +1,23 @@
 // esp32-beeb: the disc bundle partition (see bundle.h and
 // tools/make_disc_bundle.py).
+//
+// Read with esp_partition_read, not mapped. esp_partition_mmap on this
+// build handed out data-bus addresses inside the range the PSRAM heap
+// occupies (0x3c810000 with the PSRAM pool ending at 0x3c890000): the
+// flash pages replaced PSRAM pages under the heap and the next heap walk
+// faulted. So the directory is copied into internal RAM and an image into
+// a PSRAM buffer while its pulses are built.
 #include "bundle.h"
+#include <stdlib.h>
 #include <string.h>
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 
 static const char *TAG = "bundle";
 
 #define BUNDLE_SUBTYPE ((esp_partition_subtype_t)0x40)   // partitions.csv: discs, data, 0x40
+#define MAX_ENTRIES 512
 
 struct bundle_header {
     char magic[8];        // "BEEBDISC"
@@ -15,14 +25,10 @@ struct bundle_header {
     uint32_t reserved;
 };
 
-// The directory: the header and up to 2000 entries fit in the first 96 KB.
-#define DIR_BYTES (96 * 1024)
-
 static const esp_partition_t *s_part;
-static esp_partition_mmap_handle_t s_dir_handle, s_image_handle;
-static const struct bundle_header *s_hdr;
-static const struct bundle_entry *s_entries;
-static int s_image_mapped;
+static struct bundle_entry *s_entries;
+static uint32_t s_count;
+static uint8_t *s_image;
 
 esp_err_t bundle_open(void)
 {
@@ -31,39 +37,46 @@ esp_err_t bundle_open(void)
         ESP_LOGW(TAG, "no discs partition");
         return ESP_ERR_NOT_FOUND;
     }
-    const void *base;
-    esp_err_t err = esp_partition_mmap(s_part, 0, DIR_BYTES, ESP_PARTITION_MMAP_DATA, &base, &s_dir_handle);
+    struct bundle_header hdr;
+    esp_err_t err = esp_partition_read(s_part, 0, &hdr, sizeof hdr);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mapping the bundle directory failed: %s", esp_err_to_name(err));
         return err;
     }
-    const struct bundle_header *hdr = base;
-    if (memcmp(hdr->magic, "BEEBDISC", 8) != 0 || hdr->count > 2000) {
+    if (memcmp(hdr.magic, "BEEBDISC", 8) != 0 || hdr.count > MAX_ENTRIES) {
         ESP_LOGW(TAG, "discs partition holds no bundle (flash one: python tools/make_disc_bundle.py --flash COM3)");
         return ESP_ERR_NOT_FOUND;
     }
-    const struct bundle_entry *entries = (const struct bundle_entry *)((const uint8_t *)base + sizeof *hdr);
-    for (uint32_t i = 0; i < hdr->count; i++) {
+    struct bundle_entry *entries = malloc(hdr.count * sizeof *entries + 1);
+    if (!entries) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = esp_partition_read(s_part, sizeof hdr, entries, hdr.count * sizeof *entries);
+    if (err != ESP_OK) {
+        free(entries);
+        return err;
+    }
+    for (uint32_t i = 0; i < hdr.count; i++) {
         const struct bundle_entry *e = &entries[i];
         if ((size_t)e->offset + e->size > s_part->size || e->name[31] != 0) {
             ESP_LOGW(TAG, "bundle entry %u is out of bounds", (unsigned)i);
+            free(entries);
             return ESP_ERR_INVALID_STATE;
         }
     }
-    s_hdr = hdr;
     s_entries = entries;
-    ESP_LOGI(TAG, "%u discs in the bundle", (unsigned)hdr->count);
+    s_count = hdr.count;
+    ESP_LOGI(TAG, "%u discs in the bundle", (unsigned)s_count);
     return ESP_OK;
 }
 
 int bundle_count(void)
 {
-    return s_hdr ? (int)s_hdr->count : 0;
+    return (int)s_count;
 }
 
 const struct bundle_entry *bundle_entry(int i)
 {
-    if (!s_hdr || i < 0 || (uint32_t)i >= s_hdr->count) {
+    if (i < 0 || (uint32_t)i >= s_count) {
         return NULL;
     }
     return &s_entries[i];
@@ -82,23 +95,23 @@ int bundle_find(const char *name)
 const uint8_t *bundle_map(const struct bundle_entry *e)
 {
     bundle_unmap();
-    // The mapping is in 64 KB pages: map from the page holding the image.
-    uint32_t page = e->offset & ~0xffffu;
-    const void *base;
-    esp_err_t err = esp_partition_mmap(s_part, page, e->offset - page + e->size, ESP_PARTITION_MMAP_DATA,
-                                       &base, &s_image_handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mapping %s failed: %s", e->name, esp_err_to_name(err));
+    s_image = heap_caps_malloc(e->size, MALLOC_CAP_SPIRAM);
+    if (!s_image) {
+        ESP_LOGW(TAG, "no PSRAM for %s", e->name);
         return NULL;
     }
-    s_image_mapped = 1;
-    return (const uint8_t *)base + (e->offset - page);
+    if (esp_partition_read(s_part, e->offset, s_image, e->size) != ESP_OK) {
+        ESP_LOGW(TAG, "reading %s failed", e->name);
+        bundle_unmap();
+        return NULL;
+    }
+    return s_image;
 }
 
 void bundle_unmap(void)
 {
-    if (s_image_mapped) {
-        esp_partition_munmap(s_image_handle);
-        s_image_mapped = 0;
+    if (s_image) {
+        heap_caps_free(s_image);
+        s_image = NULL;
     }
 }

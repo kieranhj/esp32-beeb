@@ -13,6 +13,7 @@ idf_component_register(
         "console.c"
         "sn76489.c"
         "sound_esp.c"
+        "input.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_timer esp_lcd esp_driver_i2c esp_driver_spi esp_driver_gpio
         esp_partition nvs_flash esp_driver_usb_serial_jtag esp_driver_i2s

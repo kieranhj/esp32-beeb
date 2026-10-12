@@ -196,8 +196,13 @@ instruction, then sound.
 
 - [ ] Touch menu: list embedded discs and SD discs, tap to boot. Autoboot
       with Shift+BREAK held through reset.
-- [ ] Input mapping: tap sends Space (configurable per disc), PWR short
-      press is BREAK, shake (IMU, code in fluidbox `imu.c`) resets.
+- [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
+      a swipe along the picture moves to the next or previous disc in the
+      bundle (persisted, then reboot), a PWR short press restarts. Polled at
+      50 Hz on core 0, keys handed to the machine through its key queue.
+      Not yet tried by a person: the touch controller and the expander
+      answer at boot, nobody has touched the panel with this firmware.
+- [ ] Shake (IMU, code in fluidbox `imu.c`) to reset; a per-disc key map.
 - [ ] Per-disc notes file in the bundle: machine quirks, which key the
       demo wants, whether it needs sideways RAM in a particular slot.
 - [ ] Optional: tiny on-screen keyboard, save state, screenshot to SD.

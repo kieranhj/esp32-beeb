@@ -30,6 +30,7 @@
 #include "bundle.h"
 #include "console.h"
 #include "sound_esp.h"
+#include "input.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "beeb";
@@ -212,6 +213,14 @@ static void beeb_task(void *arg)
     uint32_t slices = 0, sleeps = 0;
     int reports = 0;
     for (;;) {
+        // Keys from the touch task land a millisecond ahead of the machine,
+        // through the same queue the frame tests use.
+        {
+            int row, col, down;
+            while (input_take_key(&row, &col, &down)) {
+                machine_queue_key(m, m->synced + 2000, row, col, down);
+            }
+        }
         int64_t now = esp_timer_get_time();
         uint64_t due = (uint64_t)(now - t0) * 2;   // 2 MHz
         if (m->cpu.cycles >= due) {
@@ -371,8 +380,17 @@ void app_main(void)
     if (sound_init(i2c, console_get_volume()) != ESP_OK) {
         ESP_LOGW(TAG, "no sound");
     }
+    input_init(i2c);
 
     memset(&stream, 0, sizeof stream);
     video_start(&stream);
-    xTaskCreatePinnedToCore(beeb_task, "beeb", 16384, NULL, 5, NULL, 1);
+    ESP_LOGI(TAG, "before the machine task: internal free %u, largest block %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    // The machine task's stack is static: internal heap is short by now
+    // (band buffers, codec, the other tasks) and 16 KB contiguous may not
+    // be left in it.
+    static StaticTask_t s_beeb_tcb;
+    static StackType_t s_beeb_stack[16384 / sizeof(StackType_t)];
+    xTaskCreateStaticPinnedToCore(beeb_task, "beeb", 16384, NULL, 5, s_beeb_stack, &s_beeb_tcb, 1);
 }

@@ -1347,6 +1347,9 @@ uint64_t machine_run(struct machine *m, uint64_t until)
 
 int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int down)
 {
+    if (m->key_head == m->key_count) {
+        m->key_head = m->key_count = 0;   // drained: start again (live input)
+    }
     if (m->key_count >= 512) {
         return 0;
     }
