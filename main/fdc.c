@@ -63,11 +63,58 @@ static double position_fraction(uint32_t length, uint32_t head, uint32_t pulse)
     return ret;
 }
 
-static uint32_t time_for_position(uint32_t length, uint32_t head, uint32_t pulse)
+static uint32_t time_for_position_double(uint32_t length, uint32_t head, uint32_t pulse)
 {
     double fraction = position_fraction(length, head, pulse);
     fraction *= DISC_TICKS_PER_REV;
     return (uint32_t)fraction;
+}
+
+// The drive tick computes two positions' times and asks whether the head
+// is in the index pulse, all in doubles: on the ESP32-S3, which has no
+// double-precision FPU, that was 14 soft-float calls per 64 us tick. For
+// the standard track length a position's time is the exact quotient
+// (head * 32 + pulse) * K, K = ticks per revolution / (32 * length), an
+// integer here, or one less where the doubles round down; which positions
+// round down, and the first head past the index pulse, are worked out
+// once with the same double expressions, so the results are identical.
+// pulse is 0 or 16, so a position is head * 2 + pulse / 16.
+#define TIMING_K (DISC_TICKS_PER_REV / (32 * DISC_BYTES_PER_TRACK))
+#define TIMING_POSITIONS (DISC_BYTES_PER_TRACK * 2 + 2)
+static uint8_t timing_round_down[(TIMING_POSITIONS + 7) / 8];
+static uint32_t timing_index_heads;   // heads below this are in the index pulse
+static int timing_ok;
+
+static void timing_init(void)
+{
+    if (timing_ok || DISC_TICKS_PER_REV % (32 * DISC_BYTES_PER_TRACK) != 0) {
+        return;
+    }
+    for (uint32_t i = 0; i < TIMING_POSITIONS; i++) {
+        uint32_t head = i >> 1, pulse = (i & 1) * 16;
+        uint32_t exact = (head * 32 + pulse) * TIMING_K;
+        uint32_t t = time_for_position_double(DISC_BYTES_PER_TRACK, head, pulse);
+        if (t == exact - 1) {
+            timing_round_down[i >> 3] |= (uint8_t)(1 << (i & 7));
+        } else if (t != exact) {
+            return;   // not of that form: keep the doubles
+        }
+    }
+    uint32_t h = 0;
+    while (h < (DISC_BYTES_PER_TRACK * (INDEX_MS / (double)200))) {
+        h++;
+    }
+    timing_index_heads = h;
+    timing_ok = 1;
+}
+
+static uint32_t time_for_position(uint32_t length, uint32_t head, uint32_t pulse)
+{
+    if (length == DISC_BYTES_PER_TRACK && timing_ok) {
+        uint32_t i = head * 2 + (pulse >> 4);
+        return (head * 32 + pulse) * TIMING_K - ((timing_round_down[i >> 3] >> (i & 7)) & 1);
+    }
+    return time_for_position_double(length, head, pulse);
 }
 
 static uint32_t drive_quasi_random_pulses(uint32_t ticks)
@@ -97,6 +144,9 @@ static int drive_is_index_pulse(const struct fdc_drive *d)
         return 1;   // no disc: INDEX held
     }
     uint32_t length = drive_track_length(d);
+    if (length == DISC_BYTES_PER_TRACK && timing_ok) {
+        return d->head_position < timing_index_heads;
+    }
     return d->head_position < (length * (INDEX_MS / (double)200));
 }
 
@@ -408,6 +458,7 @@ void fdc_power_on_reset(struct fdc *f)
 void fdc_init(struct fdc *f, void (*set_nmi)(void *, int), void *ctx)
 {
     memset(f, 0, sizeof *f);
+    timing_init();
     f->set_nmi = set_nmi;
     f->ctx = ctx;
     f->state = S_IDLE;

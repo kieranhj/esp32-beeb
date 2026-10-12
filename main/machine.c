@@ -137,7 +137,9 @@ INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra
 #include "crtc.c"
 // The disc side is cold code (one call per 64 us while a disc spins):
 // keep it, and everything it inlines, out of the IRAM functions that call
-// it. On the board that leaves it in flash.
+// it. On the board that leaves it in flash. (A build with the per-byte
+// path, 4.2 KB, in IRAM stopped printing after the machine started; not
+// diagnosed, and not needed once the drive timing lost its doubles.)
 #define DISC_API __attribute__((noinline))
 #define FDC_API __attribute__((noinline))
 #define FDC_HOT_API static inline MACHINE_CODE_ATTR
