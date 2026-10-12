@@ -25,7 +25,12 @@ def main():
         s.flush()
         end = time.time() + 2.0
         while time.time() < end:
-            data = s.read(4096)
+            try:
+                data = s.read(4096)
+            except serial.SerialException:
+                print()
+                print("(port closed: the board reset or was unplugged)")
+                break
             if data:
                 sys.stdout.write(data.decode(errors="replace"))
                 sys.stdout.flush()
