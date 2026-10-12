@@ -25,6 +25,7 @@
 #define DISPLAY_BAND_ROWS 16
 #define DISPLAY_BANDS (DISPLAY_H / DISPLAY_BAND_ROWS)   // 23
 #define DISPLAY_BAND_PIXELS (DISPLAY_W * DISPLAY_BAND_ROWS)
+#define DISPLAY_BAND_BUFFERS 3   // in flight or being filled
 
 // Which way round the landscape picture sits on the portrait panel. The
 // panel does the rotation; these only pick the direction. If the boot screen

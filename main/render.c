@@ -628,7 +628,78 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
         render_px *line2 = r->line2;
         int32_t pos = r->render_pos;
         const int32_t pos0 = pos;
-        do {
+        if (!mode7 && !blank && !(TT_RUN(ma13, tt->idle_calls))) {
+            // Bitmap pixels with the teletext pipeline idle: a table copy
+            // per word, the clock and row-doubling variants hoisted out.
+            // The same words as the general loop below renders.
+#define RUN_2MHZ(DOUBLE) \
+            while (!(w & VS_PAIR)) { \
+                const render_px *v = t2[w >> 8]; \
+                PX_COPY8(line + pos, v); \
+                if (DOUBLE) { \
+                    PX_COPY8(line2 + pos, v); \
+                } \
+                pos += 8; \
+                horiz += 8; \
+                t++; \
+                n--; \
+                if (n <= 0 || pos > RENDER_WIDTH - 8) { \
+                    break; \
+                } \
+                w = vs->ring[t & (VS_RING - 1)]; \
+                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) { \
+                    break; \
+                } \
+            }
+#define RUN_1MHZ(DOUBLE) \
+            for (;;) { \
+                const render_px *v = t1[w >> 8]; \
+                if (w & VS_PAIR) { \
+                    if (pos > RENDER_WIDTH - 16) { \
+                        break; \
+                    } \
+                    PX_COPY16(line + pos, v); \
+                    if (DOUBLE) { \
+                        PX_COPY16(line2 + pos, v); \
+                    } \
+                    pos += 16; \
+                    horiz += 16; \
+                } else { \
+                    v += (w & VS_ODD) ? 8 : 0; \
+                    PX_COPY8(line + pos, v); \
+                    if (DOUBLE) { \
+                        PX_COPY8(line2 + pos, v); \
+                    } \
+                    pos += 8; \
+                    horiz += 8; \
+                } \
+                t++; \
+                n--; \
+                if (n <= 0 || pos > RENDER_WIDTH - 8) { \
+                    break; \
+                } \
+                w = vs->ring[t & (VS_RING - 1)]; \
+                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) { \
+                    break; \
+                } \
+            }
+            if (fast2) {
+                if (want2) {
+                    RUN_2MHZ(1);
+                } else {
+                    RUN_2MHZ(0);
+                }
+            } else {
+                if (want2) {
+                    RUN_1MHZ(1);
+                } else {
+                    RUN_1MHZ(0);
+                }
+            }
+#undef RUN_2MHZ
+#undef RUN_1MHZ
+        }
+        if (pos == pos0) do {
             uint8_t data = (uint8_t)(w >> 8);
             int odd = w & VS_ODD;
             if (w & VS_PAIR) {

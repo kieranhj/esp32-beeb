@@ -14,6 +14,7 @@
 // sequence is Waveshare's, as in esp32-fluidbox.
 
 #include "display.h"
+#include "esp_heap_caps.h"
 
 #include <string.h>
 
@@ -59,9 +60,12 @@
 
 static const char *TAG = "display";
 
-// Two buffers so one fills while the other is in flight. DMA_ATTR puts them
-// in DMA-capable internal SRAM; PSRAM buffers do not work for this.
-static DMA_ATTR uint16_t s_band_buf[2][DISPLAY_BAND_PIXELS];
+// Band buffers: one fills while the others are in flight. Three, because
+// the renderer gets the machine's stream in 2 ms slices and a slice is
+// more than two bands; with two it waited for the DMA 9% of the time.
+// They must be DMA-capable internal SRAM (PSRAM does not work for this)
+// and come from the heap: the static image has no room for a third.
+static uint16_t *s_band_buf[DISPLAY_BAND_BUFFERS];
 // Window parameters per band, DMA readable, alive for the whole queue.
 static DMA_ATTR uint8_t s_caset[4];
 static DMA_ATTR uint8_t s_raset[DISPLAY_BANDS][4];
@@ -71,12 +75,12 @@ static SemaphoreHandle_t s_buffers_free;
 static bool s_is_v2;
 
 // Two transactions per band (row window, pixels), reused round robin.
-static spi_transaction_t s_trans[2][2];
+static spi_transaction_t s_trans[DISPLAY_BAND_BUFFERS][2];
 static unsigned s_trans_n;
 
 // Measurement: cycle count at each flush and the time to its completion
 // interrupt, so the transfer time of a band is known (see video_esp.c).
-static uint32_t s_flush_clk[2];
+static uint32_t s_flush_clk[DISPLAY_BAND_BUFFERS];
 static unsigned s_flush_n, s_done_n;
 volatile uint32_t display_dma_clk, display_dma_count;
 
@@ -103,7 +107,7 @@ static void IRAM_ATTR on_post_trans(spi_transaction_t *t)
     if (t->user == NULL) {
         return;   // a window command, not a band
     }
-    display_dma_clk += esp_cpu_get_cycle_count() - s_flush_clk[s_done_n++ & 1];
+    display_dma_clk += esp_cpu_get_cycle_count() - s_flush_clk[s_done_n++ % DISPLAY_BAND_BUFFERS];
     display_dma_count++;
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(s_buffers_free, &woken);
@@ -138,7 +142,14 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus)
 {
     s_is_v2 = detect_v2(i2c_bus);
 
-    s_buffers_free = xSemaphoreCreateCounting(2, 2);
+    for (int i = 0; i < DISPLAY_BAND_BUFFERS; i++) {
+        s_band_buf[i] = heap_caps_aligned_alloc(16, DISPLAY_BAND_PIXELS * sizeof(uint16_t),
+                                                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (s_band_buf[i] == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    s_buffers_free = xSemaphoreCreateCounting(DISPLAY_BAND_BUFFERS, DISPLAY_BAND_BUFFERS);
     if (s_buffers_free == NULL) {
         return ESP_ERR_NO_MEM;
     }
@@ -207,13 +218,15 @@ uint16_t *display_acquire_band(void)
     // rotation is idle.
     xSemaphoreTake(s_buffers_free, portMAX_DELAY);
     static unsigned next;
-    return s_band_buf[next++ & 1];
+    uint16_t *buf = s_band_buf[next];
+    next = (next + 1) % DISPLAY_BAND_BUFFERS;
+    return buf;
 }
 
 esp_err_t display_flush_band(int band, const uint16_t *buffer)
 {
-    s_flush_clk[s_flush_n++ & 1] = esp_cpu_get_cycle_count();
-    spi_transaction_t *t = s_trans[s_trans_n++ & 1];
+    s_flush_clk[s_flush_n++ % DISPLAY_BAND_BUFFERS] = esp_cpu_get_cycle_count();
+    spi_transaction_t *t = s_trans[s_trans_n++ % DISPLAY_BAND_BUFFERS];
     memset(t, 0, sizeof s_trans[0]);
     t[0].cmd = OPCODE_WRITE_CMD;
     t[0].addr = CMD_RASET << 8;
@@ -237,10 +250,12 @@ esp_err_t display_flush_band(int band, const uint16_t *buffer)
 esp_err_t display_set_brightness(uint8_t level)
 {
     // Not while bands are queued: polling would collide with the queue.
-    xSemaphoreTake(s_buffers_free, portMAX_DELAY);
-    xSemaphoreTake(s_buffers_free, portMAX_DELAY);
+    for (int i = 0; i < DISPLAY_BAND_BUFFERS; i++) {
+        xSemaphoreTake(s_buffers_free, portMAX_DELAY);
+    }
     esp_err_t err = write_reg(CMD_BRIGHTNESS, &level, 1);
-    xSemaphoreGive(s_buffers_free);
-    xSemaphoreGive(s_buffers_free);
+    for (int i = 0; i < DISPLAY_BAND_BUFFERS; i++) {
+        xSemaphoreGive(s_buffers_free);
+    }
     return err;
 }
