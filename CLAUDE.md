@@ -89,7 +89,17 @@ edge, drive tick and control register write with its cycle to stderr;
 `host/trace.exe` built with `-DMACHINE_DEBUG_FDC -include stdio.h` prints
 ours. Run beebjit with `-debug` for these too: without it its drive timing
 differs from the traced runs. beebjit's debugger `p` toggles instruction
-printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
+printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`.
+Frame comparisons run beebjit with `BEEBJIT_MEMSYNC=1` (frametest sets
+it): beebjit catches its video up after every storing instruction only
+when not in `-fast` mode, and the patch keeps that in `-fast`, so the
+oracle renders as real-time beebjit does. Without it a display write
+shows retroactively back to the last catch-up of any kind. For a
+difference in display bytes, `BEEBJIT_LOG_FETCH=lo,hi` (beebjit) and
+`FRAME_LOG_FETCH=lo,hi` (`host/frame.exe`, which also logs each CRTC run
+with the sync point that caused it) print every fetch in a tick window
+as `F tick h v s ma d`, the same on both sides, so `diff` finds the
+first differing byte and the CPU trace at that tick says why. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
 into both emulators (beebjit `writem`/`e pc=`, ours `TRACE_JSR`) and
 diffs the traces: the regression test for VIA accesses that land on a
 timer event; run it for a few latch values. `TRACE_FROM=<cycle>` limits

@@ -109,6 +109,63 @@ open(p, 'w', newline=chr(10)).write(s)
 print("wd_fdc.c patched: control log")
 PYEOF
 
+# BEEBJIT_LOG_FETCH=lo,hi prints every display fetch with its tick in that
+# window: tick, horizontal, vertical and scanline counters, MA and the byte,
+# for comparing with host/frame.exe's FRAME_LOG_FETCH.
+python -I - "$PATCHED/video.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read().replace(chr(13) + chr(10), chr(10))
+anchor = """                                                      is_odd_tick);
+      }
+
+      render_render(p_render, p_video->data_byte, is_odd_tick);"""
+assert anchor in s
+add = """                                                      is_odd_tick);
+        {
+          static long long log_lo = -1, log_hi = -1;
+          if (log_lo < 0) {
+            const char* e = getenv("BEEBJIT_LOG_FETCH");
+            log_lo = log_hi = 0;
+            if (e) sscanf(e, "%lld,%lld", &log_lo, &log_hi);
+          }
+          if ((long long) ticks >= log_lo && (long long) ticks < log_hi) {
+            fprintf(stderr, "F %llu h %u v %u s %u ma %04X d %02X@N@",
+                    (unsigned long long) ticks, horiz_counter,
+                    p_video->vert_counter, p_video->scanline_counter,
+                    (p_video->address_counter - 1) & 0x3FFF,
+                    p_video->data_byte);
+          }
+        }
+      }
+
+      render_render(p_render, p_video->data_byte, is_odd_tick);"""
+add = add.replace("@N@", chr(92) + "n")
+s = '#include <stdio.h>' + chr(10) + '#include <stdlib.h>' + chr(10) + s
+s = s.replace(anchor, add, 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("video.c patched: fetch log")
+PYEOF
+
+# BEEBJIT_MEMSYNC=1 keeps the video's catch-up after every storing
+# instruction in -fast mode. beebjit installs it only when not fast, so a
+# headless -fast run lets a display write show retroactively back to the
+# last catch-up of any kind; real-time beebjit (what is seen) syncs.
+python -I - "$PATCHED/bbc.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read().replace(chr(13) + chr(10), chr(10))
+anchor = """  if (!is_fast) {
+    p_memory_written_callback = video_advance_for_memory_sync;
+  }"""
+assert anchor in s
+s = "#include <stdlib.h>" + chr(10) + s.replace(anchor, """  if (!is_fast || getenv("BEEBJIT_MEMSYNC")) {
+    p_memory_written_callback = video_advance_for_memory_sync;
+  }""", 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("bbc.c patched: memory sync in fast mode")
+PYEOF
+
 cat > "$OUT/stub.c" <<'STUB'
 /* beebjit declares this label .globl in asm/x64/asm_inturbo_x64.S but never
  * defines it; GNU as lets that pass, clang's assembler does not. */

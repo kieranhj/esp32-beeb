@@ -36,8 +36,7 @@ core 0 load), from the STATS line:
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
 
-Next: bs-twisted at 200 M (CRTC catch-ups at line ends), then core 0 on
-the teletext and loading screens, then the SN76489 write cycle, then
+Next: core 0 on the teletext and loading screens, then the SN76489 write cycle, then
 frame cases for the rest of `discs/`.
 
 ## The budget
@@ -174,11 +173,17 @@ frame cases for the rest of `discs/`.
       the end of the stretched cycle, display writes visible since the
       previous storing instruction. The twister (100 M) and the ending
       (300 M) are pixel identical frame cases.
-- [ ] bs-twisted at 200 M (one-line frames, the displayed line rewritten
-      as it is shown): 3464 pixels differ, in lines already drawn. Not
-      write timing, catch-up timing or the write window (each tried, see
-      decisions, "a lazier CRTC tried and dropped"). Next: log the bytes
-      our CRTC fetches for those lines and compare with beebjit's.
+- [x] bs-twisted at 200 M: the oracle, not us. beebjit in `-fast` skips
+      its per-store video catch-up; with it (`BEEBJIT_MEMSYNC`, as real
+      time beebjit runs) 200 M is identical. Frame cases for 200 M and
+      for the loader's "1. REAL HARDWARE" option (125 M, 275 M).
+- [ ] Left by choice: a few bytes per frame where a VIA event sync runs
+      our CRTC past a fetch before a read-modify-write on that byte lands
+      (twisted 195 M: 208 pixels; hardware mode 150 M: 176, 175 M: 24).
+      Ours fetches the old byte, as hardware does; beebjit shows the new
+      one, its video only catching up after the store. Matching it means
+      leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
+      clocks on the drawing effects). See decisions.
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows

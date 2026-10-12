@@ -24,6 +24,24 @@
 #define CPU6502_TRACE_IRQ(cpu, nmi) trace_line(cpu, (nmi) ? 2 : 1)
 struct cpu6502;
 static void trace_line(struct cpu6502 *cpu, int kind);
+// FRAME_LOG_FETCH=lo,hi: every display fetch in that tick window, in the
+// format of beebjit's BEEBJIT_LOG_FETCH (tools/build_beebjit_win.sh); the
+// CRTC takes the exact path there.
+static long long fetch_lo, fetch_hi;
+#define CRTC_FETCH_LOG_EXACT(t, n) ((long long)(t) + (long long)(n) > fetch_lo && (long long)(t) < fetch_hi)
+#define CRTC_FETCH_LOG(c, t, hc, ma, d) do { \
+        if ((long long)(t) >= fetch_lo && (long long)(t) < fetch_hi) { \
+            fprintf(stderr, "F %lu h %u v %u s %u ma %04X d %02X\n", (unsigned long)(t), (unsigned)(hc), \
+                    (unsigned)(c)->vert_counter, (unsigned)(c)->scanline_counter, (unsigned)(ma), (unsigned)(d)); \
+        } \
+    } while (0)
+#define CRTC_RUN_LOG(c, first, n) do { \
+        if ((long long)(first) + (long long)(n) > fetch_lo && (long long)(first) < fetch_hi) { \
+            fprintf(stderr, "R %lu %lu synced %lu due %lu lastwr %lu\n", (unsigned long)(first), (unsigned long)(n), \
+                    (unsigned long)crtc_owner(c)->synced, (unsigned long)crtc_owner(c)->sync_due, \
+                    (unsigned long)crtc_owner(c)->cpu.last_wr); \
+        } \
+    } while (0)
 #include "../main/machine.c"
 
 // Optional instruction trace (--trace file), same format as host/trace.c.
@@ -226,6 +244,9 @@ int main(int argc, char **argv)
     m->vs = &stream;
     render_init(&render, canvas);
     render.compat_clear = getenv("FRAME_ALWAYS_CLEAR") ? 2 : 1;
+    if (getenv("FRAME_LOG_FETCH")) {
+        sscanf(getenv("FRAME_LOG_FETCH"), "%lld,%lld", &fetch_lo, &fetch_hi);
+    }
     machine_reset(m);
     if (autoboot) {
         machine_autoboot(m);

@@ -222,6 +222,9 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
 
     if (!is_1mhz || !is_odd_tick) {
         c->data_byte = crtc_rendering_tick(c, horiz_counter, r0_hit, c->r9_hit, is_odd_tick);
+#ifdef CRTC_FETCH_LOG
+        CRTC_FETCH_LOG(c, tick, horiz_counter, (c->address_counter - 1) & 0x3fff, c->data_byte);
+#endif
     }
     CRTC_RENDER(c, c->data_byte, c->dispen_shifts[c->skew_dispen_index], is_odd_tick, c->data_ma13);
 
@@ -551,6 +554,9 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
 {
     uint32_t i = 0;
     c->vsync_changed = 0;
+#ifdef CRTC_RUN_LOG
+    CRTC_RUN_LOG(c, first, n);
+#endif
     while (i < n) {
 #ifdef MACHINE_STATS
         uint64_t p0 = CRTC_CYCLES();
@@ -559,6 +565,11 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
         if (fast > n - i) {
             fast = n - i;
         }
+#ifdef CRTC_FETCH_LOG
+        if (CRTC_FETCH_LOG_EXACT(first + i, fast)) {
+            fast = 0;   // host debugging: every tick through crtc_tick
+        }
+#endif
 #ifdef MACHINE_STATS
         uint64_t p1 = CRTC_CYCLES();
         c->stat_clk_plan += p1 - p0;

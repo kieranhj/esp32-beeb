@@ -21,6 +21,10 @@ OUT = os.path.join("out", "frametest")
 # Both sides clear their canvas at every flyback: beebjit's paint scheduling
 # otherwise decides what stale content survives a framing change.
 ENV = dict(os.environ, FRAME_ALWAYS_CLEAR="1")
+# beebjit catches its video up after every storing instruction only when not
+# in -fast mode; the patched build keeps that in -fast with BEEBJIT_MEMSYNC,
+# so the oracle renders as real-time beebjit does.
+BJ_ENV = dict(os.environ, BEEBJIT_MEMSYNC="1")
 
 # BBC keyboard matrix (row, col) and the beebjit key code, from beebjit's
 # keyboard_bbc_key_to_rowcol. Shifted characters list the unshifted key.
@@ -94,7 +98,7 @@ def run_test(name, text, start=1520000, trace=False):
     bj_args += ["-commands", ";".join(bj_cmds)]
     with open(os.path.join(OUT, f"{name}_bj.txt"), "w") as bj_out:
         subprocess.run(bj_args, cwd=os.path.dirname(BJ), stdout=bj_out if trace else subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+                       stderr=subprocess.DEVNULL, env=BJ_ENV)
     ours_bin = os.path.join(OUT, f"{name}_ours.bin")
     args = [FRAME, os.path.join("roms", "mos3.20"), str(end), ours_bin]
     if trace:
@@ -135,12 +139,20 @@ DISC_TESTS = {
     "infinity": ("crtc-mode-infinity.ssd", 12000000),
     "nasty": ("crtc-somenastyeffects.ssd", 12000000),
     "sugarsmash": ("crtc-sugarsmash.ssd", 12000000),
-    # Twisted Brain: the twister (palette x4 and R12/R13 every scanline)
-    # and the ending. (At 200 M, the effect that races the beam, 3464
-    # pixels still differ: see PLAN.md.)
+    # Twisted Brain: the twister (palette x4 and R12/R13 every scanline),
+    # the effect that rewrites the line as it is shown, and the ending.
+    # The loader asks "0. EMULATOR (default)" or "1. REAL HARDWARE": these
+    # take the default after its 20 s countdown, the _hw cases press 1
+    # (frames start just before each million cycles there).
     "twisted": ("bs-twisted.ssd", 100000000),
+    "twisted2": ("bs-twisted.ssd", 200000000),
     "twisted3": ("bs-twisted.ssd", 300000000),
+    "twisted_hw": ("bs-twisted.ssd", 125030000),
+    "twisted_hw3": ("bs-twisted.ssd", 275030000),
 }
+
+# Keys typed into a disc case, as (text, first cycle): the loader's prompt.
+DISC_KEYS = {"twisted_hw": ("1", 12000000), "twisted_hw3": ("1", 12000000)}
 
 
 def run_disc_test(name, disc, end, trace=False):
@@ -152,13 +164,17 @@ def run_disc_test(name, disc, end, trace=False):
                "-0", os.path.abspath(disc_path), "-autoboot"]
     if trace:
         bj_args += ["-print", "-opt", "debug:print-ticks"]
-    bj_args += ["-commands", f"breakat {end};c;dumpframe {bj_bin};q"]
+    events = key_events(*DISC_KEYS[name]) if name in DISC_KEYS else []
+    bj_cmds = [f"breakat {c - 2000};c;{'keydown' if down else 'keyup'} {code}" for c, row, col, down, code in events]
+    bj_args += ["-commands", ";".join(bj_cmds + [f"breakat {end};c;dumpframe {bj_bin};q"])]
     with open(os.path.join(OUT, f"{name}_bj.txt"), "w") as bj_out:
         subprocess.run(bj_args, cwd=os.path.dirname(BJ), stdout=bj_out if trace else subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+                       stderr=subprocess.DEVNULL, env=BJ_ENV)
     ours_bin = os.path.join(OUT, f"{name}_ours.bin")
     args = [FRAME, os.path.join("roms", "mos3.20"), str(end), ours_bin,
             "--disc", disc_path, "--autoboot"]
+    for cycle, row, col, down, code in events:
+        args += ["--key", str(cycle), str(row), str(col), str(down)]
     if trace:
         args += ["--trace", os.path.join(OUT, f"{name}_ours.txt")]
     subprocess.run(args, stderr=subprocess.DEVNULL, env=ENV)

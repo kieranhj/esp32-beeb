@@ -926,3 +926,37 @@ at the top of the frame, in an effect that runs one-line frames (R4 0,
 R9 0) and rewrites the displayed line as it is shown. Next step there:
 compare the fetched bytes themselves (log ours per tick for those lines
 and beebjit's from its render) rather than reason about when.
+
+## 2026-10-12: twisted at 200 M was the oracle in -fast mode
+
+A fetch log on both sides (`BEEBJIT_LOG_FETCH`, `FRAME_LOG_FETCH`: tick,
+counters, MA and byte for every fetch in a window) showed the same MA
+at the same tick with different bytes, and beebjit's byte was one the
+CPU stored 24 cycles after the fetch. beebjit installs its memory
+written callback (video catch-up after each storing instruction) only
+when not in fast mode, and the oracle always runs `-fast`, so its video
+moved only on CRTC/ULA writes and its own timer and a store showed back
+to whichever came last. Real-time beebjit, what is watched, syncs. The
+build script now patches the callback in under `BEEBJIT_MEMSYNC=1` and
+frametest sets it. The CPU trace is unchanged by it (2 M cycles
+compared). With it: twisted at 180, 190, 199, 199.5, 200 and 210 M
+identical; every existing case still 0.
+
+The demo's loader offers "0. EMULATOR (default)" and "1. REAL HARDWARE"
+(written before the emulators got these effects right; `?&70`). Every
+earlier comparison and the board took the default. With 1 pressed at
+12 M, frames at 50-300 M (every 25 M, late in the frame) are identical
+except 150 M (176 pixels) and 175 M (24). New cases: twisted2 (200 M),
+twisted_hw (125 M) and twisted_hw3 (275 M).
+
+What is left, at 195 M and in hardware mode, is one kind of byte: the
+effect reads a display byte, masks it and stores it back (LDA (zp),Y;
+AND; ORA; STA (zp),Y). When a VIA event (a 64-tick timer here) falls
+between the CRTC's fetch of that byte and the store, our sync runs the
+CRTC with the machine and the fetch sees the old byte, which is what
+hardware fetches at that tick. beebjit's video does not move on VIA
+events, so it renders the fetch after the store and shows the new one.
+Matching it means leaving the CRTC behind at every non-video sync, the
+lazy CRTC of the entry above (1-4 clocks on the drawing effects, the
+ending near the budget), to reproduce a granularity of beebjit's rather
+than the hardware. Left as is, noted in PLAN.md.
