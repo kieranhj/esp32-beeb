@@ -512,5 +512,11 @@ void video_start(struct vstream *vs)
     video_test_mode = 1;
     video_bench(vs, "core 1 idle", 1);
     video_test_mode = 0;
-    xTaskCreatePinnedToCore(render_task, "render", 8192, NULL, 5, NULL, 0);
+    // Static, as the machine task's: the internal heap's largest block is
+    // under 8 KB once everything runs, and every KB of IRAM code comes out
+    // of the same RAM, so a heap stack here failed silently (the machine
+    // then waited for ring room for ever).
+    static StaticTask_t s_render_tcb;
+    static StackType_t s_render_stack[8192 / sizeof(StackType_t)];
+    xTaskCreateStaticPinnedToCore(render_task, "render", 8192, NULL, 5, s_render_stack, &s_render_tcb, 0);
 }

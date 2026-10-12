@@ -319,7 +319,7 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
 // level (or needs its per-line bookkeeping): the next end of line, or the
 // half-R0 point in a row that is at or in vsync. Register writes reset the
 // estimate through the machine. Never less than 1.
-CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c)
+CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c, uint32_t tick)
 {
     uint32_t hc = c->horiz_counter;
     uint32_t r0 = c->reg[CRTC_R0_HTOTAL];
@@ -332,9 +332,11 @@ CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c)
             t = to_half;
         }
     }
-    // 1 MHz mode: counters step every other system tick.
+    // 1 MHz mode: counters step on the odd system ticks, so from an odd
+    // tick the t-th step is 2t - 1 ticks away (as crtc_fast_ticks); 2t
+    // overshot by one and a CRTC left behind could run over a vsync change.
     if (!c->ula_clock_fast) {
-        t *= 2;
+        t = 2 * t - (tick & 1);
     }
     return t ? t : 1;
 }

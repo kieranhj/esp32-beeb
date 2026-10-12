@@ -32,7 +32,7 @@ core 0 load), from the STATS line:
 | bs-wave-runner | 100-114 | 69-86% |
 | mmode7 (teletext) | 67 | 80% |
 | bs-beebstep, bs-teletextr (loading) | 93-96 | 84-85% |
-| bs-twisted | 64-116 (the twister 105, the ending 106-116) | 56-87% |
+| bs-twisted | 65-117 (the twister 105, the ending 117) | 56-88% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
 
@@ -174,12 +174,11 @@ frame cases for the rest of `discs/`.
       the end of the stretched cycle, display writes visible since the
       previous storing instruction. The twister (100 M) and the ending
       (300 M) are pixel identical frame cases.
-- [ ] bs-twisted at 200 M (the effect that writes display memory as it
-      is shown): 3464 pixels differ. Our CRTC also catches up at every
-      line end for vsync detection, beebjit only after storing
-      instructions. A check horizon that skips line ends that cannot
-      change vsync would match it (and cut catch-ups); the
-      "vsync changes found catching up" counter is the guard.
+- [ ] bs-twisted at 200 M (one-line frames, the displayed line rewritten
+      as it is shown): 3464 pixels differ, in lines already drawn. Not
+      write timing, catch-up timing or the write window (each tried, see
+      decisions, "a lazier CRTC tried and dropped"). Next: log the bytes
+      our CRTC fetches for those lines and compare with beebjit's.
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows

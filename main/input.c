@@ -248,6 +248,8 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c)
     }
     // Above the render task (5), which keeps core 0 busy almost all the time:
     // at a lower priority the polls ran late or not at all.
-    xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, 7, NULL, 0);
+    if (xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, 7, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the input task");
+    }
     return ESP_OK;
 }

@@ -141,5 +141,7 @@ void console_start(void)
         ESP_LOGW(TAG, "usb serial jtag driver: %s", esp_err_to_name(err));
         return;
     }
-    xTaskCreatePinnedToCore(console_task, "console", 3072, NULL, 2, NULL, 0);
+    if (xTaskCreatePinnedToCore(console_task, "console", 3072, NULL, 2, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the console task");
+    }
 }

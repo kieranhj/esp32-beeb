@@ -250,7 +250,9 @@ esp_err_t sound_init(i2c_master_bus_handle_t i2c, int volume)
         return ESP_FAIL;
     }
     esp_codec_dev_set_out_vol(s_speaker, volume);
-    xTaskCreatePinnedToCore(sound_task, "sound", 4096, NULL, 6, NULL, 0);
+    if (xTaskCreatePinnedToCore(sound_task, "sound", 4096, NULL, 6, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the sound task");
+    }
     ESP_LOGI(TAG, "ES8311 at %d Hz, task on core 0", SOUND_RATE);
     return ESP_OK;
 }

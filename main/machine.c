@@ -577,7 +577,7 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
         src = 3;
     }
     if (!(skip & 1)) {
-        uint32_t v = m->crtc_synced + crtc_ticks_to_check(&m->crtc);
+        uint32_t v = m->crtc_synced + crtc_ticks_to_check(&m->crtc, m->crtc_synced);
         if ((int32_t)(v - due) < 0) {
             due = v;
             src = 4;
@@ -606,15 +606,40 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
     m->win_due = due;
 
     // Display addresses the CRTC will fetch before `due`: the core only
-    // catches up for writes inside this window. Conservative when the
-    // MA range crosses an addressing boundary.
+    // catches up for writes inside this window. MA climbs within a line,
+    // but a line end reloads it with the row's start and a frame start
+    // with R12/R13, so past a line end those starts are in too. (A demo
+    // that runs one-line frames fetches the same bytes every line.)
+    // Conservative when the MA range crosses an addressing boundary.
     {
+        const struct crtc *c = &m->crtc;
         uint32_t chars = due - m->crtc_synced;
-        if (!m->crtc.ula_clock_fast) {
+        if (!c->ula_clock_fast) {
             chars = chars / 2 + 1;
         }
-        uint32_t ma0 = m->crtc.address_counter;
+        uint32_t ma0 = c->address_counter;
         uint32_t ma1 = ma0 + chars + 1;
+        uint32_t hc = c->horiz_counter, r0 = c->reg[CRTC_R0_HTOTAL];
+        uint32_t to_eol = (hc <= r0) ? (r0 - hc + 1) : (256 - hc + r0 + 1);
+        if (chars >= to_eol) {
+            uint32_t lines = (chars - to_eol) / (r0 + 1) + 1;   // line ends inside
+            uint32_t starts[2];
+            int ns = 0;
+            starts[ns++] = c->address_counter_saved;
+            if (c->is_end_of_main_latched || c->is_end_of_vert_adjust_latched || c->is_end_of_frame_latched ||
+                c->is_in_vert_adjust || c->is_vert_adjust_pending || c->in_dummy_raster ||
+                ((uint32_t)((c->reg[CRTC_R4_VTOTAL] - c->vert_counter) & 0x7f) < lines)) {
+                starts[ns++] = ((c->reg[CRTC_R12_MAH] << 8) | c->reg[CRTC_R13_MAL]) & 0x3fff;
+            }
+            for (int i = 0; i < ns; i++) {
+                if (starts[i] < ma0) {
+                    ma0 = starts[i];
+                }
+                if (starts[i] + chars + 1 > ma1) {
+                    ma1 = starts[i] + chars + 1;
+                }
+            }
+        }
         uint32_t lo = machine_display_addr(m, ma0, 0);
         uint32_t hi = machine_display_addr(m, ma1 & 0x3fff, 7);
         if (ma1 > 0x3fff || ((ma0 ^ ma1) & 0x3000) || hi < lo || (skip & 1)) {
@@ -999,7 +1024,7 @@ INLINE int io_needs_crtc(const struct machine *m, uint16_t addr, uint32_t cyc)
     if ((addr & 0xff00) == 0xfe00 && (addr < 0xfe24 || (addr >= 0xfe30 && addr < 0xfe38))) {
         return 1;
     }
-    return (cyc - m->crtc_synced) >= crtc_ticks_to_check(&m->crtc);
+    return (cyc - m->crtc_synced) >= crtc_ticks_to_check(&m->crtc, m->crtc_synced);
 }
 
 // A VIA access with nothing else going on: the demos' vsync polling loops

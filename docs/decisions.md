@@ -886,3 +886,43 @@ the line ends that cannot change vsync; that would also cut catch-ups.
 
 Cost on the board (one store per data write): the twister 102 -> 105,
 the B17x effect 86 -> 89, the ending 115-116.
+
+## 2026-10-12: a lazier CRTC tried and dropped; three bugs it shook out
+
+To match beebjit at twisted's 200 M frame, the CRTC was made lazy: a
+check horizon that skips the line ends that cannot change vsync (they
+only change at the half-R0 point of R7's row, at a line end during a
+vsync, at the start of R7's row, and on register writes), and catch-ups
+that take the CRTC only to the end of the last storing instruction,
+where beebjit's video would be, unless a check point or a lag cap
+intervened. The "vsync changes found catching up" counter stayed at 0
+over 16 discs from power on (900 M cycles) once one bug below was fixed.
+It changed nothing at 200 M (the same 3464 pixels), cut boundary syncs
+on sotc by two thirds, and cost the drawing effects 1-4 clocks (the
+CRTC's runs split at every store point instead). Not kept.
+
+What it shook out, all kept:
+
+- The render task's 8 KB stack came from the internal heap, whose
+  largest block is now 7.7 KB; any IRAM growth (the code comes out of
+  the same RAM) and it was not created, silently, and the machine then
+  waited for ring room for ever. That was also this morning's "1770 in
+  IRAM stopped printing". The stack is static, like the machine task's,
+  and the other task creations log a failure.
+- crtc_ticks_to_check in 1 MHz mode scaled characters to ticks by 2;
+  the counters step on odd ticks, so from an odd tick the bound was one
+  late (2t - 1, as crtc_fast_ticks has it) and a CRTC left behind could
+  run over a vsync change. Latent until something left it behind longer.
+- The display write window assumed MA only climbs from the CRTC's
+  position; a line end reloads it with the row's start and a frame start
+  with R12/R13, so a store to a byte already fetched this line, or in a
+  one-line frame, made no sync. The window now includes those starts
+  when its span crosses a line end (twisted's drawing effects 89 -> 93).
+
+The 200 M frame's difference is not write timing, catch-up timing or
+the window: it does not move with any of them, nor with the dump moment
+(beebjit dumped 400 cycles either side). It sits in lines already drawn
+at the top of the frame, in an effect that runs one-line frames (R4 0,
+R9 0) and rewrites the displayed line as it is shown. Next step there:
+compare the fetched bytes themselves (log ours per tick for those lines
+and beebjit's from its render) rather than reason about when.
