@@ -32,10 +32,10 @@ core 0 load), from the STATS line:
 | bs-wave-runner | 92 | 70% |
 | mmode7, bs-bar-beeb (teletext) | 75-79 | 79-80% |
 | bs-beebstep, bs-teletextr (loading) | 104-107 | 83-86% |
-| bs-twisted | 107 loading; the effect not re-measured (was about 125) | 53-95% |
+| bs-twisted | 107 loading, effects 118-128, the twister 151 | 53-95% |
 | bs-sotc, bs-mott (VIA pollers) | 111-117 | 60% |
 
-Next: twisted's effect on the board, then the SN76489 write cycle, then
+Next: the twister in bs-twisted (151), then the SN76489 write cycle, then
 frame cases for the rest of `discs/`.
 
 ## The budget
@@ -161,10 +161,17 @@ frame cases for the rest of `discs/`.
       recomputing it, and no longer steps through an event tick on the
       access cycle), loading 118-121 -> 104-107 (the 1770's drive timing
       without soft-float doubles). See decisions, "core 1 under budget".
-- [ ] bs-twisted's effect on the board (about 125 before the changes
-      above): its CRTC and ULA writes every scanline are full catch-ups;
-      what is left is the catch-up's fixed cost (prologue and schedule).
-      Needs a capture long enough to reach it.
+- [ ] bs-twisted's twister, 171 -> 151 (CRTC selects through the quiet
+      path, no reschedule after palette and R12/R13 writes). Left: 54,500
+      catch-ups per million cycles at about 260 clocks of bookkeeping
+      each, and CRTC runs cut every 11 ticks. Next: a lean catch-up for
+      writes before the sync point, and keeping the fetch run's plan
+      across a palette write. See decisions, "Twisted Brain's twister".
+- [ ] bs-twisted diverges from beebjit at cycle 3,531,805 of its boot:
+      a 1770 control write while drive 0 spins mid-byte; beebjit applies
+      it as if after the drive tick due 13 cycles later. Find why in
+      beebjit's timing.c, match it, then add twisted at 100 M as a frame
+      case (7800 pixels differ now).
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows

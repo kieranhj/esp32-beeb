@@ -761,3 +761,45 @@ Seen in passing, not yet tested: an IC32 write through the system VIA
 that changes the screen size (bits 4 and 5) sets the CRTC's wrap at once,
 while that access may have left the CRTC behind, so the deferred run
 would fetch the rest of that scanline with the new wrap.
+
+## 2026-10-12: Twisted Brain's twister, and a 1770 divergence it exposed
+
+A 150 s capture of bs-twisted got past the loading: its effects run at
+118-128, but the twister (pc &80D2-&8119, about 50-80 s in) ran at 171.
+Per scanline it writes the palette four times, then selects and writes
+R13 and R12: 67,500 full catch-ups per million cycles, each followed by
+a schedule, two for a palette write (the catch-up's own and the one
+after the access). Two cuts (host 46.7 -> 36.6 clocks per cycle in that
+phase, board 171 -> 151):
+
+- A CRTC register select only latches the address register, read by
+  nothing until the data access, which catches up: it takes the quiet
+  path with the VIAs and does not reschedule.
+- A palette write and an R12/R13 write move nothing the scheduler looks
+  at (the CRTC's check horizon depends on R0, R7, the counters and the
+  clock rate; the display write window follows the live MA), so before
+  the sync point the schedule computed earlier stands.
+
+What is left (profile build, 159): 54,500 catch-ups per million cycles,
+each about 260 clocks of catch-up bookkeeping beyond the work, and a
+CRTC run cut every 11 ticks on average, so planning (9 clocks per
+cycle) and the fetch-run setup are paid 85,000 times per million cycles
+and a fast tick costs 30 clocks against 16 in long runs. The two
+candidates: a lean catch-up for a write before the sync point (step the
+CRTC and the VIAs, no chunk loop), and keeping the fetch run's plan
+across a write that cannot change it.
+
+The twister as a frame case at cycle 100 M differs from beebjit by 7800
+pixels (28920 before this session's fixes; the same 7800 with and
+without the I/O changes above), so it is not in frametest.py yet. Trace
+windows bisect the first divergence that persists to cycle 3,531,805
+during the boot: a write of &25 to the 1770's control register (&FE24)
+while drive 0 spins mid-byte. Both stop and restart the drive timer and
+recompute the head position through beebjit's double fraction, in which
+head 887 comes back as 886. Ours applies the write on its cycle, so the
+next tick reads 886 again; beebjit's drive log reads as if the write
+took effect after the tick due at 3,531,818 (887 there, then 888 one
+cycle later), where 888 survives the round trip. The phase difference
+then shows 59 M cycles later as a sector read 177 cycles late. Why
+beebjit orders it that way is in its lazily synced timer countdown
+(timing.c), not yet read through.
