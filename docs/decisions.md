@@ -456,3 +456,78 @@ one call per 64 us while a disc spins) and the pulses will live in PSRAM,
 1 MB a side. Also found here: the core's instruction loop head is
 duplicated into every opcode's tail by the compiler, so a few lines added
 there cost 34 KB of IRAM; the interrupt decision is now out of line.
+
+## 2026-10-12: a demo on the board, profiled: core 1 148 -> 106, core 0 99 -> 80
+
+The first disc on the board (`crtc-tmoyos.ssd` embedded in the image and
+autobooted) ran at 148 clocks per cycle on core 1, core 0 saturated, the
+lag growing. Both were brought inside real time by measuring, not by
+guessing; the tools are now part of the repo.
+
+Measuring: a profile build (`-DBEEB_PROFILE`, see CLAUDE.md) compiles the
+machine's counters with the Xtensa cycle counter around each part of the
+catch-up and prints a PROF line every 5 s; the host bench
+(`host/bench.exe --disc --autoboot --from`) gives the same counters for a
+window of a demo in a second. The two disagree on proportions (the board's
+in-order core pays five times the host's clocks for the same code) so the
+board's numbers decide and the host's find the counts behind them. The
+renderer reports its event counts, table rebuild time and the panel path
+split in the VIDEO and PANEL lines.
+
+Core 1, in the order the profile pointed at them:
+
+- The CRTC fast path cost 48 clocks a tick: it recomputed the display
+  address and branched on every tick. It now asks the machine once per
+  run for a pointer, a stride and how many characters stay linear
+  (`machine_display_run`: to the next MA wrap boundary or RAM region)
+  and streams bytes with a load and a store each. 20 clocks a tick.
+- Exact ticks cost 170 to 240 clocks and were 13% of all ticks. An hsync
+  in progress is only a countdown, the start-of-line chain only shifts
+  latches whose inputs a register write would resync first, and the
+  DISPEN pipeline settles over three ticks that are each a shift: all
+  three now run inside the fast path. Exact ticks are the counter hits
+  alone, 2.4%.
+- Every 1 MHz access made three catch-up calls (to the access, each idle
+  cycle, the cycle after); it is two, the idle cycle or two merged with
+  the catch-up and the scheduling deferred to the last.
+- The scheduler made the core sync every cycle for the four ticks of the
+  line-start chain, 31000 syncs a second, for nothing the chain can
+  change. Removing them exposed a hole the syncs had covered: a key event
+  applies after its cycle's IRQ level is recorded, and the core carries
+  the old level until it next syncs, so the keyboard interrupt arrived
+  late unless something synced within a few cycles. Every test key lands
+  on a line start. The machine now flags a key event that moved the
+  level and brings the core back one cycle later; `vdu19` was three
+  scanlines of palette wrong without it.
+- The demo rewrites ROMSEL/ACCCON 13000 times a second; a write that
+  changes nothing no longer remaps. The 1770's event query is inline in
+  IRAM (it ran from flash once per chunk). The sync hook's history length
+  is clamped to 16: a window of 32 or more cycles shifted by its length
+  modulo 32 and kept stale bits.
+
+Core 0:
+
+- The demo writes the palette per scanline, and every write rebuilt the
+  whole expansion table: 74% of core 0. Three steps: rebuild only the
+  entries whose pixels use the changed colour, lazily once per scanline
+  (22%); then no rebuild at all. On the board a pixel is now a colour
+  code (`pixel.h`): a logical colour the emitter resolves through the
+  palette when the span is sent to the scaler, or a physical one for
+  teletext and blanking, plus the cursor's inversion bit. A palette
+  write or flash change ends the span and rebuilds a 64-entry RGB565
+  lookup. The tables depend on the mode alone. The host keeps beebjit's
+  ARGB pixels as the reference and its indexed build resolves the same
+  way, so both are checked against beebjit.
+- The run loop's bitmap case is four loops (clock x row doubling) with
+  the checks a run cannot change hoisted out: 74 -> 59 clocks a word.
+- The machine ran 2 ms ahead in slices and, when behind, 40000 cycles at
+  once: it lapped the ring and the picture tore. It now waits when fewer
+  than 2000 words are free; a saturated core 0 slows the machine instead.
+  A third band buffer (from the DMA-capable heap, the static image being
+  full) cut the wait for the DMA from 9% to 5%.
+
+Where it stands on this demo, paced: core 1 at 106 clocks per cycle (the
+core about 45, CRTC 41, catch-up overhead 20); core 0 at 80% (bitmap
+words 59 clocks each, the scaler 14%, queueing bands 7%, waiting for the
+DMA 5%, events 7%). Mode 7 is unchanged at the limit: 186 clocks a
+character word in the renderer.

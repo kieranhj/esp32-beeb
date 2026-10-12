@@ -25,12 +25,15 @@ MODE 0 to 6, line drawing, VDU 19) are pixel identical. Discs load: the 1770 and
 an autobooted CRTC test disc traces identical to beebjit for 6 M cycles and
 renders identically 12 M cycles in, for all five test discs. On the board the
 picture is on the panel: the machine on core 1 paced to real time, the
-renderer and scaler on core 0, at about 80% of core 0 in bitmap modes and
-at the limit in mode 7; the discs are not on the board yet. The panel orientation (mirror bits, V2 gap axis)
+renderer and scaler on core 0. A CRTC test disc embedded in the image
+autoboots and runs in real time: core 1 at 106 clocks per cycle, core 0
+at 80%, no tearing (the machine waits for ring room); mode 7 is still at
+the limit of core 0. The panel orientation (mirror bits, V2 gap axis)
 has not been seen by a person yet: boot it and read the mode 7 banner, then
 fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
 `main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
-Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
+Next: the rest of the discs on the board (a disc bundle partition rather
+than one embedded image), and the mode 7 renderer.
 
 ## The budget
 
@@ -132,15 +135,23 @@ Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
 - [x] Brightness control (`display_set_brightness`).
 - [ ] Frame-time overlay toggle: needs an input (Phase 5); the serial
       STATS line serves for tuning until then.
-- [ ] Mode 7 is at the limit of core 0 (about 85% rendering plus 15% panel
-      path) and drops frames at the BASIC prompt; bitmap modes run at about
-      80%. Levers, in order: a continuation write (0x3C) to halve the
-      transactions per band, a two-pixel lookup in the row scaler, a
-      character-row teletext renderer.
-- [ ] Core 1 runs at 106 clocks per cycle at the prompt with the stream on
-      (96 without), 118 to 128 while BASIC draws lines: the display write
-      window syncs the machine on every screen write. Over budget for
-      heavy screen writers; the sync needs to get cheaper or rarer.
+- [x] Core 1 inside the budget on a demo: 148 to 106 clocks per cycle on
+      `crtc-tmoyos` (linear fetch runs, hsync, line-start chain and DISPEN
+      settling in the CRTC fast path, one catch-up per 1 MHz access, no
+      per-cycle syncs during the chain). See decisions, "a demo on the
+      board, profiled". Re-measure on the heavier demos once they load.
+- [x] Core 0 on a bitmap demo with per-scanline palette writes: 99% to
+      80% (colour codes resolved at emit, the run loop specialised, three
+      band buffers, the machine waits for ring room instead of lapping).
+- [ ] Mode 7 is at the limit of core 0 (186 clocks a character word in the
+      renderer, about 85% of the core at the prompt). Levers: a nibble
+      lookup glyph expander, a character-row renderer.
+- [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
+      a continuation write (0x3C) would halve the transactions per band.
+      The scaler is 14%; a two-pixel lookup would help.
+- [ ] Core 1: the core itself is about 45 of the 106 clocks per cycle and
+      the catch-up's per-call overhead about 20; neither has been looked
+      at since Phase 1.
 
 ## Phase 4: disc and sound
 
@@ -150,6 +161,9 @@ Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
       beebjit for 6 M cycles, every one of 2061 NMI edges on the same
       cycle; the CRTC test discs render identically 12 M cycles in. Host
       only so far: `host/frame.exe --disc x.ssd --autoboot`.
+- [x] One disc embedded in the image (`EMBED_FILES` in `main/CMakeLists.txt`,
+      expanded to pulses in PSRAM at boot, autobooted) as the first disc on
+      the board.
 - [ ] Disc source: embedded bundle in the `discs` flash partition (a simple
       directory of name/offset/size entries followed by raw images), plus
       `.ssd`/`.dsd` on the SD card over SDMMC. Sector reads from flash are

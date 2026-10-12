@@ -79,7 +79,10 @@ keyboard matrix; its cases are the regression set for video changes. Build
 it a second time with `-DRENDER_INDEXED` (the board's pixel type) as
 `host/frame_idx.exe` and run the bitmap cases with
 `FRAME_EXE='host\frame_idx.exe'`: they must still be identical; mode 7
-differs only in beebjit's anti-aliased glyph edges.
+differs only in beebjit's anti-aliased glyph edges. The board's pixel is a
+colour code resolved by the emitter (`main/pixel.h`): the indexed host
+build resolves the same way into its canvas, so a palette-timing change
+is checked by the indexed cases, not only the ARGB ones.
 
 On the board (`idf.py -p COM3 flash`, then `python tools/capture.py 45 COM3`):
 boot prints BENCH lines (the renderer and panel path timed over synthetic
@@ -87,11 +90,26 @@ MODE 2 and MODE 7 streams with core 1 idle), then every 5 s a PANEL line
 (rows scaled, time waiting for a band buffer, time queueing bands) and a
 STATS line (core 1 clocks per emulated cycle, how far behind real time,
 frames and bands sent, stream overruns, core 0 render load and ns per
-stream word). Build with `-DBEEB_MEASURE` (add to `target_compile_options`
-in `main/CMakeLists.txt`) to get the first 15 s split into no stream /
-stream dropped / rendered unsent, which is how the costs in decisions.md
-were separated. Five seconds after boot a BASIC line drawer is typed in so
-there is motion to look at.
+stream word), and a VIDEO line (renderer events, palette writes, table
+rebuild time, time in slow words). Build with `-DBEEB_MEASURE` (add to
+`target_compile_options` in `main/CMakeLists.txt`) to get the first 15 s
+split into no stream / stream dropped / rendered unsent. By default the
+image embeds `discs/crtc-tmoyos.ssd` and autoboots it; `BEEB_TYPE_DEMO`
+types a BASIC line drawer instead.
+
+Profiling the machine on the board: build with `-DBEEB_PROFILE` and
+`VS_RING=8192` (both in `main/CMakeLists.txt`; the counters cost 13 KB of
+IRAM, so that build keeps the renderer in flash and the ring half size,
+which makes core 0 slower but core 1's numbers right). It prints a PROF
+line every 5 s: calls and chunks per million cycles, clocks per emulated
+cycle in the catch-up split into CRTC (planning, fast ticks, exact ticks),
+VIAs, 1770 and scheduling, the I/O paths, and SHEILA accesses by page with
+the handler's cost. The Xtensa cycle counter is a single instruction, so
+the split is honest. The host bench prints the same counters, with host
+clocks, for a window of a demo: `host/bench.exe roms/mos3.20 32000000
+--disc discs/x.ssd --autoboot --from 30000000`; counts transfer to the
+board, proportions do not (the board pays about five times the clocks).
+The CRTC's exact ticks are counted by cause there (`exact ticks per 1M`).
 
 Board:
 
