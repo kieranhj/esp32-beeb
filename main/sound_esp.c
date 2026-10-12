@@ -111,18 +111,29 @@ static void render_to(uint32_t cycle, int16_t *out, uint32_t *count)
         s_sn_phase = cycles % 8;
         s_rendered = until;
         while (whole) {
-            uint32_t k = 8 - nsteps;
-            if (k > whole) {
-                k = whole;
-            }
-            sn_render(&s_sn, steps + nsteps, k);
-            nsteps += k;
-            whole -= k;
-            if (nsteps == 8) {
-                int32_t sum = 0;
+            int32_t sum;
+            if (nsteps == 0 && whole >= 8) {
+                // A whole output sample: eight steps at once (host/sntest.c
+                // checks it equals eight single steps summed).
+                sum = sn_render8(&s_sn);
+                whole -= 8;
+            } else {
+                uint32_t k = 8 - nsteps;
+                if (k > whole) {
+                    k = whole;
+                }
+                sn_render(&s_sn, steps + nsteps, k);
+                nsteps += k;
+                whole -= k;
+                if (nsteps != 8) {
+                    continue;
+                }
+                sum = 0;
                 for (int i = 0; i < 8; i++) {
                     sum += steps[i];
                 }
+            }
+            {
                 // The chip's output is unipolar (0 to full scale); a DC
                 // blocker (one pole, about 25 Hz) keeps it off the speaker.
                 int32_t x = sum / 8;

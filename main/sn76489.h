@@ -32,5 +32,9 @@ void sn_reset(struct sn76489 *sn);
 void sn_write(struct sn76489 *sn, uint8_t value);
 // n samples at 250 kHz, the four channels summed.
 void sn_render(struct sn76489 *sn, int16_t *out, uint32_t n);
+// The sum of the next eight 250 kHz samples (one 31250 Hz output sample
+// times eight); the same as eight sn_render samples added, but a channel
+// whose counter does not expire within the eight costs one step.
+int32_t sn_render8(struct sn76489 *sn);
 
 #endif

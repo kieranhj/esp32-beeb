@@ -397,14 +397,16 @@ static void video_bench(struct vstream *vs, const char *when, int mode7)
         render_bench_skip = skips[variant];
         vs->tail = 0;
         r->stat_fast_words = r->stat_slow_words = 0;
+        r->stat_clk_slow = 0;
         int64_t u0 = esp_timer_get_time();
         uint32_t c0 = esp_cpu_get_cycle_count();
         render_consume_n(r, vs, (int)words);
         uint32_t c = esp_cpu_get_cycle_count() - c0;
         int64_t us = esp_timer_get_time() - u0;
-        printf("BENCH render %s %s, %s: %lu words (%lu fast, %lu slow), %lu clk/word, %lld us\n",
+        printf("BENCH render %s %s, %s: %lu words (%lu fast, %lu slow), %lu clk/word, %lld us; slow words %lu clk each\n",
                mode7 ? "MODE 7" : "MODE 2", when, names[variant], (unsigned long)words, (unsigned long)r->stat_fast_words,
-               (unsigned long)r->stat_slow_words, (unsigned long)(c / words), (long long)us);
+               (unsigned long)r->stat_slow_words, (unsigned long)(c / words), (long long)us,
+               (unsigned long)(r->stat_slow_words ? r->stat_clk_slow / r->stat_slow_words : 0));
     }
     render_bench_skip = 0;
     // the same again with the panel writes

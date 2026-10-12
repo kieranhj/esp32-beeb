@@ -64,6 +64,60 @@ SN_API void sn_write(struct sn76489 *sn, uint8_t value)
     }
 }
 
+SN_API int32_t sn_render8(struct sn76489 *sn)
+{
+    int32_t sum = 0;
+    for (int ch = 0; ch < 4; ch++) {
+        uint16_t counter = sn->counter[ch];
+        // No expiry within the eight steps: counter - k stays non-zero for
+        // k = 1..8, i.e. counter > 8 (counter 0 underflows to 0x3ff first).
+        if (counter > 8 || counter == 0) {
+            if (counter == 0) {
+                counter = 0x3ff;
+                sn->counter[ch] = (uint16_t)(counter - 7);
+            } else {
+                sn->counter[ch] = (uint16_t)(counter - 8);
+            }
+            uint8_t output = ch == 3 ? (sn->noise_rng & 1) : sn->output[ch];
+            if (output) {
+                sum += 8 * sn->volume_outputs[sn->volume[ch]];
+            }
+            continue;
+        }
+        // An expiry within the eight: step this channel one at a time.
+        uint16_t rng = sn->noise_rng;
+        for (int k = 0; k < 8; k++) {
+            uint16_t c = (uint16_t)((sn->counter[ch] - 1) & 0x3ff);
+            uint8_t output = sn->output[ch];
+            if (c == 0) {
+                c = sn->period[ch];
+                output = !output;
+                sn->output[ch] = output;
+                if (ch == 3 && output) {
+                    if (sn->noise_type == 0) {
+                        rng >>= 1;
+                        if (rng == 0) {
+                            rng = 1 << 14;
+                        }
+                    } else {
+                        int bit = (rng & 1) ^ ((rng >> 1) & 1);
+                        rng = (uint16_t)((rng >> 1) | (bit << 14));
+                    }
+                }
+            }
+            sn->counter[ch] = c;
+            if (ch == 3) {
+                output = rng & 1;
+            }
+            if (output) {
+                sum += sn->volume_outputs[sn->volume[ch]];
+            }
+        }
+        sn->noise_rng = rng;
+    }
+    return sum;
+}
+
 SN_API void sn_render(struct sn76489 *sn, int16_t *out, uint32_t n)
 {
     uint16_t rng = sn->noise_rng;
