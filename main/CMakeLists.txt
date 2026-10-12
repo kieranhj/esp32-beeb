@@ -9,8 +9,11 @@ idf_component_register(
         "machine_esp.c"
         "video_esp.c"
         "display.c"
+        "bundle.c"
+        "console.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_timer esp_lcd esp_driver_i2c esp_driver_spi esp_driver_gpio
+        esp_partition nvs_flash esp_driver_usb_serial_jtag
     EMBED_FILES
         "../roms/mos3.20/mos.rom"
         "../roms/mos3.20/dfs.rom"

@@ -35,8 +35,8 @@ tearing: the machine waits for ring room. The panel orientation (mirror bits, V2
 has not been seen by a person yet: boot it and read the mode 7 banner, then
 fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
 `main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
-Next: the rest of the discs on the board (a disc bundle partition rather
-than one embedded image), and the mode 7 renderer.
+Next: the mode 7 renderer (core 0's limit), the core's cost per I/O
+instruction, then sound.
 
 ## The budget
 
@@ -170,19 +170,19 @@ than one embedded image), and the mode 7 renderer.
       cycle; the CRTC test discs render identically 12 M cycles in. Host
       only so far: `host/frame.exe --disc x.ssd --autoboot`.
 - [x] One disc embedded in the image (`EMBED_FILES` in `main/CMakeLists.txt`,
-      expanded to pulses in PSRAM at boot, autobooted) as the first disc on
-      the board.
-- [ ] Disc source: embedded bundle in the `discs` flash partition (a simple
-      directory of name/offset/size entries followed by raw images), plus
-      `.ssd`/`.dsd` on the SD card over SDMMC. Sector reads from flash are
-      mmap pointer arithmetic; SD reads go through a small sector cache in
-      PSRAM.
+      expanded to pulses in PSRAM at boot, autobooted), the fallback when
+      there is no bundle.
+- [x] Disc bundle in the `discs` flash partition (`tools/make_disc_bundle.py
+      --flash COM3`: a directory of name/offset/size/sides entries then the
+      raw images; `main/bundle.c` maps the directory and one image at a
+      time, since the data MMU cannot take 12 MB beside PSRAM) and a serial
+      console (`main/console.c`, `tools/beeb.py COM3 boot x.ssd`) that
+      persists the choice in NVS and resets. All 44 discs are on the board.
+- [ ] `.ssd`/`.dsd` on the SD card over SDMMC, through a small sector cache
+      in PSRAM.
 - [ ] SN76489 at 4 MHz input clock, generated per emulated cycle slice,
       resampled to the ES8311 over I2S through a ring buffer. Audio is
       produced in lockstep with emulation so it never drifts from video.
-- [ ] Bundle tool `tools/make_disc_bundle.py`: builds the partition image
-      from a list of discs and flashes it with esptool at the partition
-      offset.
 
 ## Phase 5: front end
 

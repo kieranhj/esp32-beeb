@@ -27,6 +27,9 @@
 #include "display.h"
 #include "machine.h"
 #include "video_esp.h"
+#include "bundle.h"
+#include "console.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "beeb";
 
@@ -154,19 +157,42 @@ static void beeb_task(void *arg)
                   t, 160000, 80000);
 #else
     (void)t;
-    // The embedded disc: pulses in PSRAM (1 MB a side), read only.
+    // The disc: the one chosen at the console from the bundle partition, else
+    // the bundle's first, else the one embedded in the image. Its pulses go
+    // in PSRAM (1 MB a side), read only.
     {
+        const uint8_t *image = disc0_start;
         uint32_t size = (uint32_t)(disc0_end - disc0_start);
         int sides = strstr(BEEB_DISC_NAME, ".dsd") ? 2 : 1;
+        const char *name = BEEB_DISC_NAME;
+        const char *source = "embedded";
+        if (bundle_count() > 0) {
+            char chosen[32];
+            console_get_disc(chosen, sizeof chosen);
+            int i = chosen[0] ? bundle_find(chosen) : -1;
+            if (i < 0) {
+                i = 0;
+            }
+            const struct bundle_entry *e = bundle_entry(i);
+            const uint8_t *mapped = bundle_map(e);
+            if (mapped) {
+                image = mapped;
+                size = e->size;
+                sides = e->sides;
+                name = e->name;
+                source = "bundle";
+            }
+        }
         uint32_t *pulses = heap_caps_malloc((size_t)sides * DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t),
                                             MALLOC_CAP_SPIRAM);
         if (pulses) {
             int64_t t0 = esp_timer_get_time();
             disc_init(&disc0, pulses, sides, 0);
-            disc_load_ssd(&disc0, disc0_start, size);
+            disc_load_ssd(&disc0, image, size);
+            bundle_unmap();   // the pulses are in PSRAM now
             machine_set_disc(m, 0, &disc0);
             machine_autoboot(m);
-            printf("disc 0: %s, %u bytes expanded to pulses in %lld us\n", BEEB_DISC_NAME, (unsigned)size,
+            printf("disc 0: %s (%s), %u bytes expanded to pulses in %lld us\n", name, source, (unsigned)size,
                    (long long)(esp_timer_get_time() - t0));
         } else {
             printf("disc 0: no PSRAM for the pulses\n");
@@ -322,6 +348,18 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(display_init(i2c));
     ESP_ERROR_CHECK(display_set_brightness(DISPLAY_BRIGHTNESS));
+
+    // Settings (the chosen disc) in NVS, the disc bundle, the serial console.
+    esp_err_t nvs = nvs_flash_init();
+    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs = nvs_flash_init();
+    }
+    if (nvs != ESP_OK) {
+        ESP_LOGW(TAG, "nvs: %s", esp_err_to_name(nvs));
+    }
+    bundle_open();
+    console_start();
 
     memset(&stream, 0, sizeof stream);
     video_start(&stream);

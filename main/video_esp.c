@@ -372,23 +372,28 @@ static void video_bench(struct vstream *vs, const char *when, int mode7)
             vs_put(vs, VS_EV(VS_RA, line));
             for (int t = 0; t < 128; t++) {
                 uint8_t data = (uint8_t)(t * 7 + line * 3 + n);
+                if (t == 80) {
+                    // Blanking: one skip word for the run, as the CRTC emits.
+                    vs_put(vs, VS_EV(VS_SKIP, 48));
+                    break;
+                }
                 if (mode7) {
                     // one pair word per character, as the CRTC emits
                     data = (uint8_t)(0x20 + ((t / 2 + n) % 0x5f));   // printable text
-                    vs_put(vs, (uint16_t)((data << 8) | VS_PAIR | (t < 80 ? VS_DISPEN : 0) | VS_MA13));
+                    vs_put(vs, (uint16_t)((data << 8) | VS_PAIR | VS_DISPEN | VS_MA13));
                     t++;
                     continue;
                 }
-                vs_put(vs, (uint16_t)((data << 8) | (t & 1) | (t < 80 ? VS_DISPEN : 0)));
+                vs_put(vs, (uint16_t)((data << 8) | (t & 1) | VS_DISPEN));
             }
             vs_put(vs, VS_EV(VS_HSYNC, 8));
         }
         n++;
     }
     uint32_t words = vs->head;
-    static const char *const names[] = {"full", "all slow path", "no teletext pipeline", "no teletext pixels"};
-    static const uint8_t skips[] = {0, 1, 8, 16};
-    for (int variant = 0; variant < (mode7 ? 4 : 2); variant++) {
+    static const char *const names[] = {"full", "all slow path", "no teletext pipeline", "no teletext pixels", "neither"};
+    static const uint8_t skips[] = {0, 1, 8, 16, 24};
+    for (int variant = 0; variant < (mode7 ? 5 : 2); variant++) {
         render_bench_skip = skips[variant];
         vs->tail = 0;
         r->stat_fast_words = r->stat_slow_words = 0;
