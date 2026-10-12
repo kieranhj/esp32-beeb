@@ -45,6 +45,7 @@ static void reset_stats(struct machine *m)
     memset(m->crtc.stat_slow_why, 0, sizeof m->crtc.stat_slow_why);
     m->stat_io_ticks = m->stat_zero_calls = 0;
     m->stat_crtc_deferred = m->stat_crtc_deferred_vsync = 0;
+    m->stat_via_fast = 0;
     m->stat_sync_boundary = m->stat_sync_io = m->stat_sync_write = 0;
     memset(m->stat_due_hist, 0, sizeof m->stat_due_hist);
     memset(m->stat_due_src, 0, sizeof m->stat_due_src);
@@ -103,6 +104,7 @@ int main(int argc, char **argv)
     printf("crtc: plan %.1f clk/cyc, fast %.1f clk/tick, slow %.1f clk/tick\n", (double)m->crtc.stat_clk_plan / ran,
            m->crtc.stat_fast ? (double)m->crtc.stat_clk_fast / m->crtc.stat_fast : 0.0,
            m->crtc.stat_slow ? (double)m->crtc.stat_clk_slow / m->crtc.stat_slow : 0.0);
+    printf("via accesses through the quiet window: %u (%.0f per 1M)\n", m->stat_via_fast, m->stat_via_fast * 1e6 / ran);
     printf("crtc left behind by %u calls (%.0f per 1M), vsync changes found catching up: %u (must be 0)\n",
            m->stat_crtc_deferred, m->stat_crtc_deferred * 1e6 / ran, m->stat_crtc_deferred_vsync);
     printf("per 1M cycles: fast runs %.0f (avg %.1f ticks), io ticks %.0f, zero-length calls %.0f\n",

@@ -555,6 +555,7 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
     }
     STAT(m->stat_due_src[src]);
     m->sync_due = due;
+    m->win_due = due;
 
     // Display addresses the CRTC will fetch before `due`: the core only
     // catches up for writes inside this window. Conservative when the
@@ -947,6 +948,68 @@ INLINE int io_needs_crtc(const struct machine *m, uint16_t addr, uint32_t cyc)
     return (cyc - m->crtc_synced) >= crtc_ticks_to_check(&m->crtc);
 }
 
+// A VIA access with nothing else going on: the demos' vsync polling loops
+// read the system VIA's IFR every eight cycles, and a sample player
+// writes it as often. When no VIA event, ADC, key, 1770 or possible vsync
+// change falls in the window, the VIAs are stepped by subtraction, the
+// IRQ history is the level held, the CRTC is left behind, and the
+// scheduling afterwards is the VIA's next event against the sync point
+// the display write window was computed for (so that window stays
+// valid). Anything else falls through to the general path.
+static MACHINE_NOINLINE int io_quiet_window(struct machine *m, uint32_t end, uint32_t *mask, uint32_t *n)
+{
+    uint32_t s = m->synced;
+    uint32_t w = end - s;
+    if (w >= 16 || m->adc_busy || m->key_head < m->key_count || m->nmi_edge || m->irq_late) {
+        return 0;
+    }
+    if (fdc_ticks_to_event(&m->fdc) != 0xffffffffu) {
+        return 0;
+    }
+    uint32_t e = via_ticks_to_event(&m->sysvia);
+    uint32_t e2 = via_ticks_to_event(&m->usrvia);
+    if (e2 < e) {
+        e = e2;
+    }
+    uint32_t first_odd = s + 1 + ((s + 1) & 1 ? 0 : 1);
+    uint32_t via_abs = first_odd + 2 * (e - 1);
+    if ((int32_t)(via_abs - end) < 0) {
+        return 0;
+    }
+    if (end - m->crtc_synced >= crtc_ticks_to_check(&m->crtc)) {
+        return 0;
+    }
+    uint32_t k = ((s + w + 1) >> 1) - ((s + 1) >> 1);
+    if (k) {
+        via_advance(&m->sysvia, k);
+        via_advance(&m->usrvia, k);
+    }
+    m->synced = end;
+    *mask = machine_irq_level(m) ? ((1u << w) - 1) : 0;
+    *n = w;
+    STAT(m->stat_via_fast);
+    return 1;
+}
+
+static MACHINE_NOINLINE void io_schedule_quiet(struct machine *m)
+{
+    uint32_t s = m->synced;
+    uint32_t e = via_ticks_to_event(&m->sysvia);
+    uint32_t e2 = via_ticks_to_event(&m->usrvia);
+    if (e2 < e) {
+        e = e2;
+    }
+    uint32_t first_odd = s + 1 + ((s + 1) & 1 ? 0 : 1);
+    uint32_t due = first_odd + 2 * (e - 1);
+    if ((int32_t)(s + 4096 - due) < 0) {
+        due = s + 4096;
+    }
+    if ((int32_t)(m->win_due - due) < 0) {
+        due = m->win_due;
+    }
+    m->sync_due = due;
+}
+
 // Hardware access slow paths, out of line, with no access to the core's
 // state. They catch up first, then spend the stretched cycles themselves
 // and return like machine_sync() with the data byte in bits 24-31. A 1 MHz
@@ -1000,6 +1063,21 @@ static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t 
     (void)io0;
     uint32_t mask, n, k = 0;
     uint8_t v;
+    if ((addr & 0xffc0) == 0xfe40) {
+        uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2;
+        if (io_quiet_window(m, cyc + t_, &mask, &n)) {
+            cyc += t_;
+            k += t_;
+            v = via_read((addr & 0x20) ? &m->usrvia : &m->sysvia, addr & 0xf);
+            if (IO_LEVEL_MOVED()) {
+                IO_TICK();
+            } else {
+                k++;
+                io_schedule_quiet(m);
+            }
+            return IO_RESULT(v);
+        }
+    }
     if ((addr & 0xff00) != 0xfe00) {
         IO_SYNC_IDLE();
         v = fred_jim_read(m, addr);
@@ -1027,6 +1105,21 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
     uint64_t io0 = MACHINE_CYCLES();
     (void)io0;
     uint32_t mask, n, k = 0;
+    if ((addr & 0xffc0) == 0xfe40) {
+        uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2;
+        if (io_quiet_window(m, cyc + t_, &mask, &n)) {
+            cyc += t_;
+            k += t_;
+            via_write((addr & 0x20) ? &m->usrvia : &m->sysvia, addr & 0xf, val);
+            if (IO_LEVEL_MOVED()) {
+                IO_TICK();
+            } else {
+                k++;
+                io_schedule_quiet(m);
+            }
+            return IO_RESULT(0);
+        }
+    }
     if ((addr & 0xff00) != 0xfe00) {
         IO_SYNC_IDLE();
         IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening

@@ -42,6 +42,7 @@ struct machine {
     uint64_t stat_clk_sheila[8];   // register handling alone, by (addr >> 4) & 7 within SHEILA
     uint32_t stat_io_page[8];
     uint32_t stat_io_ticks, stat_zero_calls;   // IO_TICK advance calls; calls with nothing to run
+    uint32_t stat_via_fast;   // VIA accesses through the quiet-window path
     uint32_t stat_crtc_deferred, stat_crtc_deferred_vsync;   // calls that left the CRTC behind; vsync changes found when catching it up (must be 0)   // which term set the due cycle: 0 cap, 1 via, 2 adc, 3 key, 4 crtc, 5 fdc, 6 nmi
 
     uint8_t ram[0x8000];
@@ -102,6 +103,7 @@ struct machine {
     // to a device other than the CRTC, the ULA or paging leaves the CRTC
     // behind when no vsync change can fall in the window (machine.c).
     uint32_t crtc_synced;
+    uint32_t win_due;    // the sync point the display write window was computed for
     uint32_t nmi_cycle;
 };
 
