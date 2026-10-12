@@ -1,3 +1,8 @@
+# The disc embedded in the image and autobooted, from discs/:
+#   idf.py -DBEEB_DISC=bs-twisted.ssd build
+set(BEEB_DISC "crtc-tmoyos.ssd" CACHE STRING "disc image in discs/ to embed and autoboot")
+string(MAKE_C_IDENTIFIER "${BEEB_DISC}" BEEB_DISC_SYM)
+
 idf_component_register(
     SRCS
         "main.c"
@@ -15,7 +20,7 @@ idf_component_register(
         "../roms/mos3.20/adfs.rom"
         "../roms/mos3.20/view.rom"
         "../roms/mos3.20/terminal.rom"
-        "../discs/crtc-tmoyos.ssd"
+        "../discs/${BEEB_DISC}"
 )
 
 # The emulator's inner loops are integer code with no aliasing to worry about;
@@ -24,4 +29,5 @@ idf_component_register(
 target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
 # The video stream ring: 16 K words is 32 KB of internal SRAM and 0.4 of a
 # frame of slack between the machine and the renderer.
-target_compile_definitions(${COMPONENT_LIB} PRIVATE VS_RING=16384)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE VS_RING=16384
+    BEEB_DISC_SYM=${BEEB_DISC_SYM} BEEB_DISC_NAME="${BEEB_DISC}")

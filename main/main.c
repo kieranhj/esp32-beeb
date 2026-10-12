@@ -41,8 +41,11 @@ static const char *TAG = "beeb";
 #define ROM(sym) \
     extern const uint8_t sym##_start[] asm("_binary_" #sym "_rom_start");
 ROM(mos) ROM(dfs) ROM(viewsht) ROM(edit) ROM(basic4) ROM(adfs) ROM(view) ROM(terminal)
-extern const uint8_t disc0_start[] asm("_binary_crtc_tmoyos_ssd_start");
-extern const uint8_t disc0_end[] asm("_binary_crtc_tmoyos_ssd_end");
+// The embedded disc (BEEB_DISC in CMakeLists.txt).
+#define STR_(x) #x
+#define STR(x) STR_(x)
+extern const uint8_t disc0_start[] asm("_binary_" STR(BEEB_DISC_SYM) "_start");
+extern const uint8_t disc0_end[] asm("_binary_" STR(BEEB_DISC_SYM) "_end");
 static struct disc disc0;
 
 // Everything the emulation touches per cycle lives in internal SRAM.
@@ -154,14 +157,16 @@ static void beeb_task(void *arg)
     // The embedded disc: pulses in PSRAM (1 MB a side), read only.
     {
         uint32_t size = (uint32_t)(disc0_end - disc0_start);
-        uint32_t *pulses = heap_caps_malloc(DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+        int sides = strstr(BEEB_DISC_NAME, ".dsd") ? 2 : 1;
+        uint32_t *pulses = heap_caps_malloc((size_t)sides * DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t),
+                                            MALLOC_CAP_SPIRAM);
         if (pulses) {
             int64_t t0 = esp_timer_get_time();
-            disc_init(&disc0, pulses, 1, 0);
+            disc_init(&disc0, pulses, sides, 0);
             disc_load_ssd(&disc0, disc0_start, size);
             machine_set_disc(m, 0, &disc0);
             machine_autoboot(m);
-            printf("disc 0: %u bytes expanded to pulses in %lld us\n", (unsigned)size,
+            printf("disc 0: %s, %u bytes expanded to pulses in %lld us\n", BEEB_DISC_NAME, (unsigned)size,
                    (long long)(esp_timer_get_time() - t0));
         } else {
             printf("disc 0: no PSRAM for the pulses\n");

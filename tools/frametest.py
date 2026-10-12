@@ -119,6 +119,10 @@ TESTS = {
     "mode6": "MODE 6",
     "lines2": "MODE 2:FOR I=0 TO 15:GCOL 0,I:MOVE I*80,0:DRAW I*80+79,1023:NEXT",
     "vdu19": "MODE 1:VDU 19,0,4,0,0,0,19,3,10,0,0,0:PRINT 12345",
+    # Teletext: the prompt, double height, coloured graphics with hold and
+    # separated modes, flash and conceal (control codes through VDU).
+    "mode7": "MODE 7:VDU 141,72,73:PRINT:VDU 141,72,73:PRINT:VDU 145,106,107,108,158,105,153,106,106:PRINT",
+    "mode7b": "MODE 7:VDU 136,65,66,67,137,152,68,69,70,129,71,72,157,130,73,74,156,75:PRINT:VDU 151,154,33,34,35,36,37,38,39:PRINT",
 }
 
 
