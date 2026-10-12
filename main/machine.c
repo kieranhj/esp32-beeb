@@ -956,7 +956,9 @@ INLINE int io_needs_crtc(const struct machine *m, uint16_t addr, uint32_t cyc)
 // scheduling afterwards is the VIA's next event against the sync point
 // the display write window was computed for (so that window stays
 // valid). Anything else falls through to the general path.
-static MACHINE_NOINLINE int io_quiet_window(struct machine *m, uint32_t end, uint32_t *mask, uint32_t *n)
+// Inline: a call level fewer under the core, whose register windows are
+// what an access costs most (the callee chain overflows them).
+INLINE int io_quiet_window(struct machine *m, uint32_t end, uint32_t *mask, uint32_t *n)
 {
     uint32_t s = m->synced;
     uint32_t w = end - s;
@@ -991,7 +993,7 @@ static MACHINE_NOINLINE int io_quiet_window(struct machine *m, uint32_t end, uin
     return 1;
 }
 
-static MACHINE_NOINLINE void io_schedule_quiet(struct machine *m)
+INLINE void io_schedule_quiet(struct machine *m)
 {
     uint32_t s = m->synced;
     uint32_t e = via_ticks_to_event(&m->sysvia);

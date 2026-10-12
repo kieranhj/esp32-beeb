@@ -531,3 +531,60 @@ core about 45, CRTC 41, catch-up overhead 20); core 0 at 80% (bitmap
 words 59 clocks each, the scaler 14%, queueing bands 7%, waiting for the
 DMA 5%, events 7%). Mode 7 is unchanged at the limit: 186 clocks a
 character word in the renderer.
+
+## 2026-10-12: seven demos on the board, and what an I/O access costs
+
+With the embedded disc selectable (`idf.py "-DBEEB_DISC=x.ssd" build`)
+seven bitshifters discs were run for 75 s each. Core 1 in clocks per
+cycle (budget 120) and core 0's load, after the changes below:
+
+| disc | core 1 | core 0 | what it is doing |
+|---|---|---|---|
+| crtc-tmoyos | 102 | 65-77% | palette and CRTC writes per scanline |
+| bs-wave-runner | 92 | 70% | real time |
+| bs-patarty | 156 | 52% | palette per scanline (before the changes below) |
+| bs-twisted | 180 | 53% | a CRTC register, the palette and a VIA every scanline |
+| bs-sotc | 139 | 55% | polls the system VIA for vsync every 8 cycles |
+| bs-mott | 141 | 54% | the same |
+| bs-bar-beeb, bs-beebstep | 74, 115 | 99% | mode 7 screens: core 0 is the limit |
+
+Each one taught something, all checked by the trace diff (6 M cycles
+with a disc, 2 M without) and the 16 frame cases, identical throughout:
+
+- The cycle after a register access was a catch-up call of its own. Now
+  the core counts it as stretch and the machine only redoes the
+  scheduling, unless the access moved the IRQ level or raised an NMI
+  edge, when that cycle is advanced and recorded as before. Two calls per
+  access at most. Twisted Brain 221 -> 181.
+- A scanline with several spans (one per palette write) whose doubled
+  panel row fell in the next band moved to that band mid-scanline, then
+  sought back for the next span with a fresh buffer: 20 extra bands a
+  frame, rows lost, a third of core 0 waiting for the DMA. The doubled
+  row now waits for the hsync. 0 backwards seeks.
+- An access to anything but the CRTC, the ULA or paging leaves the CRTC
+  behind (`crtc_synced`), provided the scheduler's own bound says no vsync
+  change can fall in the window, so the IRQ history recorded without it
+  holds; the CRTC catches up in one run at the next full catch-up, where
+  its fast path gets whole lines. A counter checks the bound: zero
+  violations on every disc. sotc 208 -> 182.
+- sotc and mott sit in a two-instruction loop reading the system VIA's
+  IFR, 116000 times a million cycles, waiting for vsync. A VIA access
+  with nothing else pending (no VIA event, ADC, key, 1770 or possible
+  vsync change in the window) now steps the VIAs by subtraction, records
+  the held level, does the access and reschedules from the VIA's next
+  event against the sync point the write window was computed for.
+  Catch-up calls on sotc 123000 -> 10000 a million cycles; 182 -> 139.
+- That build crossed the IRAM segment's jump range (`j: cannot encode:
+  xt_debugexception` at about 168 KB of IRAM text; the core alone is
+  100 KB). The renderer now runs from flash through the instruction
+  cache, which measured the same (MODE 7 bench 228 -> 229 clocks a word,
+  tmoyos' core 0 no worse), and 48 KB of the segment is free.
+
+What is left on sotc is the core: `LDA $FE4D` / `BPL` at 8 cycles a
+pair costs about 100 clocks a cycle before the machine does anything,
+200 clocks an instruction, against about 45 a cycle on ordinary code.
+The I/O instruction's path through the core (the call out, the result
+applied to the core's state) has not been looked at since Phase 1 and
+is the next thing to measure. The core 0 limit is mode 7: 229 clocks a
+character word with the panel path, and a full screen of it is a
+million words a second.

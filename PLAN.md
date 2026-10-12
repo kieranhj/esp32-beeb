@@ -25,10 +25,13 @@ MODE 0 to 6, line drawing, VDU 19) are pixel identical. Discs load: the 1770 and
 an autobooted CRTC test disc traces identical to beebjit for 6 M cycles and
 renders identically 12 M cycles in, for all five test discs. On the board the
 picture is on the panel: the machine on core 1 paced to real time, the
-renderer and scaler on core 0. A CRTC test disc embedded in the image
-autoboots and runs in real time: core 1 at 106 clocks per cycle, core 0
-at 80%, no tearing (the machine waits for ring room); mode 7 is still at
-the limit of core 0. The panel orientation (mirror bits, V2 gap axis)
+renderer and scaler on core 0. One disc is embedded per build
+(`idf.py "-DBEEB_DISC=x.ssd" build`) and autoboots. Of seven demos tried,
+two run in real time (crtc-tmoyos at 102 clocks per cycle, wave-runner at
+92), the rest are 15 to 50% over on core 1 (Twisted Brain 180, the VIA
+pollers sotc and mott 139), and any mode 7 screen saturates core 0 (229
+clocks a character word); see decisions "seven demos on the board". No
+tearing: the machine waits for ring room. The panel orientation (mirror bits, V2 gap axis)
 has not been seen by a person yet: boot it and read the mode 7 banner, then
 fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
 `main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
@@ -143,15 +146,20 @@ than one embedded image), and the mode 7 renderer.
 - [x] Core 0 on a bitmap demo with per-scanline palette writes: 99% to
       80% (colour codes resolved at emit, the run loop specialised, three
       band buffers, the machine waits for ring room instead of lapping).
-- [ ] Mode 7 is at the limit of core 0 (186 clocks a character word in the
-      renderer, about 85% of the core at the prompt). Levers: a nibble
-      lookup glyph expander, a character-row renderer.
+- [ ] Mode 7 saturates core 0 (155 clocks a character word rendering,
+      229 with the panel path; a full screen is a million words a second).
+      Levers: a nibble lookup glyph expander, a character-row renderer,
+      the scaler's two-pixel lookup.
 - [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
       a continuation write (0x3C) would halve the transactions per band.
       The scaler is 14%; a two-pixel lookup would help.
-- [ ] Core 1: the core itself is about 45 of the 106 clocks per cycle and
-      the catch-up's per-call overhead about 20; neither has been looked
-      at since Phase 1.
+- [ ] Core 1: an I/O instruction costs the core about 200 clocks before
+      the machine does anything (sotc's VIA polling loop: 100 clocks a
+      cycle of core alone); ordinary code about 45 a cycle. The I/O path
+      through the core has not been looked at since Phase 1. Twisted
+      Brain (180) is CRTC and ULA writes every scanline, each a full
+      catch-up by necessity; its remaining fat is the catch-up's fixed
+      cost (prologue and schedule, about 300 clocks each).
 
 ## Phase 4: disc and sound
 

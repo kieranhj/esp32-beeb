@@ -102,8 +102,7 @@ line drawer instead.
 
 Profiling the machine on the board: build with `-DBEEB_PROFILE` and
 `VS_RING=8192` (both in `main/CMakeLists.txt`; the counters cost 13 KB of
-IRAM, so that build keeps the renderer in flash and the ring half size,
-which makes core 0 slower but core 1's numbers right). It prints a PROF
+IRAM and the ring is halved to make room). It prints a PROF
 line every 5 s: calls and chunks per million cycles, clocks per emulated
 cycle in the catch-up split into CRTC (planning, fast ticks, exact ticks),
 VIAs, 1770 and scheduling, the I/O paths, and SHEILA accesses by page with
@@ -126,7 +125,11 @@ idf.py size-components                   # where flash/IRAM/DRAM went
 
 Map file for placement checks: `build/esp32-beeb.map`. Confirm hot functions
 landed in IRAM (`.iram1.N` input sections under `.iram0.text`) and hot tables
-in DRAM (`.dram1.N`), not in `.flash.text` / `.flash.rodata`. Disassembly:
+in DRAM (`.dram1.N`), not in `.flash.text` / `.flash.rodata`. IRAM text
+has a hard limit of about 168 KB: past it the link fails with `dangerous
+relocation: j: cannot encode: xt_debugexception` (the debug vector's jump
+cannot reach). The core is 100 KB of it; the renderer runs from flash by
+choice (`RENDER_FN` in `video_esp.c`), which measured the same. Disassembly:
 `C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-objdump.exe -d build/esp32-beeb.elf`.
 Look for `jx` to confirm table dispatch and for `callx8` inside the run loop
 to catch helpers that failed to inline.

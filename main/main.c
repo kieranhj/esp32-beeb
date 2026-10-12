@@ -240,9 +240,10 @@ static void beeb_task(void *arg)
                    (unsigned long)rfast, (unsigned long)rslow);
             if (cyc) {
                 double d = (double)cyc;
-                printf("PROF calls/M %lu chunks/M %lu io/M %lu; clk/cyc: advance %.1f (crtc %.1f: plan %.1f fast %.1f/tick slow %.1f/tick; via %.1f fdc %.1f; due %.1f) io %.1f; sheila ops/M",
+                printf("PROF calls/M %lu chunks/M %lu io/M %lu quiet/M %lu crtc-behind/M %lu; clk/cyc: advance %.1f (crtc %.1f: plan %.1f fast %.1f/tick slow %.1f/tick; via %.1f fdc %.1f; due %.1f) io %.1f; sheila ops/M",
                        (unsigned long)(m->stat_calls * 1e6 / d), (unsigned long)(m->stat_chunks * 1e6 / d),
-                       (unsigned long)(m->stat_sync_io * 1e6 / d),
+                       (unsigned long)(m->stat_sync_io * 1e6 / d), (unsigned long)(m->stat_via_fast * 1e6 / d),
+                       (unsigned long)(m->stat_crtc_deferred * 1e6 / d),
                        (double)m->stat_clk_advance / d, (double)m->stat_clk_crtc / d,
                        (double)m->crtc.stat_clk_plan / d,
                        m->crtc.stat_fast ? (double)m->crtc.stat_clk_fast / m->crtc.stat_fast : 0.0,
@@ -259,6 +260,7 @@ static void beeb_task(void *arg)
             }
             m->stat_clk_advance = m->stat_clk_crtc = m->stat_clk_via = m->stat_clk_fdc = m->stat_clk_io = 0;
             m->stat_clk_due = 0;
+            m->stat_via_fast = m->stat_crtc_deferred = 0;
             m->stat_sync_boundary = m->stat_sync_write = m->stat_sync_io = 0;
             m->stat_calls = m->stat_chunks = 0;
             m->crtc.stat_fast = m->crtc.stat_slow = 0;
