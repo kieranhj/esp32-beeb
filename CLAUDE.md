@@ -83,10 +83,12 @@ counters and beam positions (`--crtc`, with `FRAME_DEBUG=1`), write a
 trace (`--trace`, from a cycle with `--trace-from`), put a disc in a drive
 (`--disc`, `--disc1`) and autoboot it (`--autoboot`; beebjit: `-0 disc
 -autoboot`). `host/trace.exe` takes `--disc` and `--autoboot` too. The
-beebjit build script also patches in `BEEBJIT_LOG_NMI=1` and
-`BEEBJIT_LOG_DRIVE=1`, which print every 1770 NMI edge and drive tick with
-its cycle to stderr; `host/trace.exe` built with `-DMACHINE_DEBUG_FDC
--include stdio.h` prints ours. beebjit's debugger `p` toggles instruction
+beebjit build script also patches in `BEEBJIT_LOG_NMI=1`,
+`BEEBJIT_LOG_DRIVE=1` and `BEEBJIT_LOG_FDC=1`, which print every 1770 NMI
+edge, drive tick and control register write with its cycle to stderr;
+`host/trace.exe` built with `-DMACHINE_DEBUG_FDC -include stdio.h` prints
+ours. Run beebjit with `-debug` for these too: without it its drive timing
+differs from the traced runs. beebjit's debugger `p` toggles instruction
 printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
 into both emulators (beebjit `writem`/`e pc=`, ours `TRACE_JSR`) and
 diffs the traces: the regression test for VIA accesses that land on a

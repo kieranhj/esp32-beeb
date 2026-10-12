@@ -850,3 +850,39 @@ Board, normal builds, core 1 clocks per emulated cycle:
 
 With core 1 in time, core 0 is now the tighter one on twisted (up to 88%
 in the 8EAx stretch) and on the teletext and loading screens (84-87%).
+
+## 2026-10-12: bs-twisted against beebjit: four differences, one left
+
+The twister frame at cycle 100 M differed by 28920 pixels at the start
+of the session and 7800 after the VIA event-tick fix. Debug-mode trace
+windows (the oracle always runs with -debug: without it beebjit's drive
+log differs, which misled the first look), bisected, then drive-tick,
+VIA and CRTC comparisons at the first divergence, found four things,
+each now matched:
+
+- ADC status: a 1 MHz read happens here mid cycle; beebjit reads at the
+  end of the stretch, after firing timers due on that tick. A
+  conversion that ends on the next cycle reads as finished (the demo
+  polls exactly 20000 cycles after starting one).
+- The 1770's drive moves on by the position whose tick turned the motor
+  off (beebjit's callback does not return early); it decides where the
+  drive restarts.
+- CRTC register writes land at the end of the stretched cycle, one tick
+  later than other 1 MHz writes here (beebjit: "required for CRTC").
+  The demo rewrites R8 on the tick of a line end.
+- Display writes are visible to every CRTC fetch since the end of the
+  previous storing instruction (store or read-modify-write, not the
+  stack): beebjit's video catches up after each such instruction. A
+  write into the display window catches the machine up to that point
+  (cpu->last_wr) instead of through the write cycle.
+
+The twister (100 M) and the ending (300 M) are now pixel identical and
+frame cases. Still different: the effect at 200 M, 3464 pixels, which
+writes display memory as it is shown. Ours also catches the CRTC up at
+every line end (the scheduler's check horizon, for vsync detection),
+where beebjit does not, so a fetch between such a catch-up and a later
+store sees the old byte. Matching it means a check horizon that skips
+the line ends that cannot change vsync; that would also cut catch-ups.
+
+Cost on the board (one store per data write): the twister 102 -> 105,
+the B17x effect 86 -> 89, the ending 115-116.

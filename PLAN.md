@@ -32,13 +32,13 @@ core 0 load), from the STATS line:
 | bs-wave-runner | 100-114 | 69-86% |
 | mmode7 (teletext) | 67 | 80% |
 | bs-beebstep, bs-teletextr (loading) | 93-96 | 84-85% |
-| bs-twisted | 66-115 (the twister 102, the ending 106-115) | 56-88% |
+| bs-twisted | 64-116 (the twister 105, the ending 106-116) | 56-87% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
 
-Next: bs-twisted's divergence from beebjit (a 1770 control write), then
-core 0 on the teletext and loading screens, then the SN76489 write
-cycle, then frame cases for the rest of `discs/`.
+Next: bs-twisted at 200 M (CRTC catch-ups at line ends), then core 0 on
+the teletext and loading screens, then the SN76489 write cycle, then
+frame cases for the rest of `discs/`.
 
 ## The budget
 
@@ -110,10 +110,10 @@ cycle, then frame cases for the rest of `discs/`.
       display reading LYNNE when ACCCON X was set with D clear.
 - [ ] The rest of `discs/` as frame cases, a few frames into each demo;
       and mid-line palette writes shown on a demo that does them.
-- [ ] A byte written by the CPU on the cycle the CRTC fetches it: one MODE 2
-      pixel differed in a frame dumped mid-DRAW (`lines2` now settles
-      first). Fetch-before-write or after, which beebjit does the other
-      way; find out which and match it.
+- [x] A byte written by the CPU on the cycle the CRTC fetches it: beebjit
+      makes it visible to every fetch since the previous storing
+      instruction ended; matched (see decisions, "bs-twisted against
+      beebjit").
 
 ## Phase 3: presentation
 
@@ -169,11 +169,17 @@ cycle, then frame cases for the rest of `discs/`.
       the core's loop head: one bound and a lazy IRQ history). Every
       other demo measured is 67-96. See decisions, "the core's loop
       head was the cost".
-- [ ] bs-twisted diverges from beebjit at cycle 3,531,805 of its boot:
-      a 1770 control write while drive 0 spins mid-byte; beebjit applies
-      it as if after the drive tick due 13 cycles later. Find why in
-      beebjit's timing.c, match it, then add twisted at 100 M as a frame
-      case (7800 pixels differ now).
+- [x] bs-twisted against beebjit: ADC status at the conversion's last
+      cycle, the 1770 drive moving on as its motor stops, CRTC writes at
+      the end of the stretched cycle, display writes visible since the
+      previous storing instruction. The twister (100 M) and the ending
+      (300 M) are pixel identical frame cases.
+- [ ] bs-twisted at 200 M (the effect that writes display memory as it
+      is shown): 3464 pixels differ. Our CRTC also catches up at every
+      line end for vsync detection, beebjit only after storing
+      instructions. A check horizon that skips line ends that cannot
+      change vsync would match it (and cut catch-ups); the
+      "vsync changes found catching up" counter is the guard.
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows
