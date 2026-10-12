@@ -350,11 +350,7 @@ CRTC_INLINE uint32_t crtc_fast_ticks(const struct crtc *c, uint32_t tick)
     if (c->cursor_skew_counter >= 0) {
         return 0;
     }
-    uint8_t dispen = (c->display_enable_bits == DISPEN_ALL);
-    if (c->dispen_shifts[0] != dispen || c->dispen_shifts[1] != dispen ||
-        c->dispen_shifts[2] != dispen) {
-        return 0;
-    }
+    // (A DISPEN pipeline still settling is stepped by the fast path too.)
     uint32_t hc = c->horiz_counter;
     uint32_t r0 = c->reg[CRTC_R0_HTOTAL];
     uint32_t l = (hc <= r0) ? (r0 - hc) : (256 - hc + r0);
@@ -454,6 +450,33 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
         }
         c->start_of_line_state_checks = checks;
     }
+    {
+        // The DISPEN pipeline (R8 skew) settles over the three fetch ticks
+        // after a display-enable change: step those one at a time, as the
+        // exact tick does, with the pipeline's value for each.
+        uint8_t cur = (c->display_enable_bits == DISPEN_ALL);
+        while (i < n && (c->dispen_shifts[0] != cur || c->dispen_shifts[1] != cur || c->dispen_shifts[2] != cur)) {
+            uint32_t t = tick + i;
+            if (c->ula_clock_fast || !(t & 1)) {
+                c->dispen_shifts[2] = c->dispen_shifts[1];
+                c->dispen_shifts[1] = c->dispen_shifts[0];
+                c->dispen_shifts[0] = cur;
+                dispen = c->dispen_shifts[c->skew_dispen_index];
+                data = CRTC_FETCH(c, ma, ra, t & 1);
+                ma13 = (ma >> 13) & 1;
+                ma = (ma + 1) & 0x3fff;
+                CRTC_RUN_RENDER(c, data, dispen, t & 1, ma13);
+                if (c->ula_clock_fast) {
+                    hc++;
+                }
+            } else {
+                CRTC_RUN_RENDER(c, data, dispen, 1, ma13);
+                hc++;
+            }
+            i++;
+        }
+        dispen = c->dispen_shifts[c->skew_dispen_index];
+    }
     if (c->in_hsync) {
         // The hsync counter steps once per fetch tick (every tick at 2 MHz,
         // the even ticks at 1 MHz). A new hsync can only start at an R2
@@ -467,6 +490,7 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
         }
     }
     if (c->ula_clock_fast) {
+        uint32_t i0 = i;
         while (i < n) {
             const uint8_t *p;
             uint32_t stride, chars;
@@ -479,11 +503,11 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
             ma = (ma + chars) & 0x3fff;
             i += chars;
         }
-        hc = (uint8_t)(hc + n);
+        hc = (uint8_t)(hc + (n - i0));
     } else {
         // 1 MHz: the even tick fetches, the odd one counts. Both ticks of a
         // character inside the run go out as one pair word.
-        if (tick & 1) {
+        if (i < n && ((tick + i) & 1)) {
             CRTC_RUN_RENDER(c, data, dispen, 1, ma13);   // the odd tick of the current character
             hc++;
             i++;
