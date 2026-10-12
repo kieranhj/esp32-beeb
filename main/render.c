@@ -39,6 +39,11 @@
 #ifndef RENDER_FRAME_HOOK
 #define RENDER_FRAME_HOOK(r) ((void)0)
 #endif
+// Called at each hsync, after the scanline's last span has been emitted
+// and before anything of the next is rendered.
+#ifndef RENDER_LINE_HOOK
+#define RENDER_LINE_HOOK(r) ((void)0)
+#endif
 
 #ifndef RENDER_EMIT
 #define RENDER_EMIT(r, first, count, vert) render_emit_canvas(r, first, count, vert)
@@ -50,6 +55,11 @@
 // emitter resolves colour codes and keeps its own lookup).
 #ifndef RENDER_PALETTE_HOOK
 #define RENDER_PALETTE_HOOK(r) ((void)0)
+#endif
+// One logical colour was written (the common case: a demo rewrites the
+// palette every scanline).
+#ifndef RENDER_PALETTE_ENTRY_HOOK
+#define RENDER_PALETTE_ENTRY_HOOK(r, logical) RENDER_PALETTE_HOOK(r)
 #endif
 
 #ifdef RENDER_EMIT_CANVAS
@@ -394,6 +404,7 @@ static void do_vsync(struct render *r);
 static RENDER_FN void do_hsync(struct render *r, uint32_t pulse_ticks)
 {
     flush_line(r);
+    RENDER_LINE_HOOK(r);
     if (r->horiz_beam_pos >= 1536 && r->vert_beam_pos <= 8) {
         r->is_crt_grayscale_fakeout = 1;
     }
@@ -518,7 +529,7 @@ RENDER_FN void render_word(struct render *r, uint16_t w)
 #ifdef RENDER_INDEXED
         end_span(r);   // what is rendered keeps the old palette
         r->logical_to_physical[payload >> 4] = payload & 0x0f;
-        RENDER_PALETTE_HOOK(r);
+        RENDER_PALETTE_ENTRY_HOOK(r, payload >> 4);
 #else
         r->logical_to_physical[payload >> 4] = payload & 0x0f;
         r->palette_dirty |= (uint16_t)(1u << (payload >> 4));

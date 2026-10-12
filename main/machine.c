@@ -475,9 +475,102 @@ INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra
 // VIA tick count is odd(e) - odd(s) where odd(x) is the number of odd
 // integers up to x.
 static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t cyc, int want_due);
+static MACHINE_NOINLINE void machine_schedule(struct machine *m);
 static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc)
 {
     return machine_advance_ex(m, cyc, 1);
+}
+
+// When must the core come back? The earliest VIA event, ADC completion
+// or CRTC vsync opportunity; also bound by the CRTC's render lag. Sets
+// m->sync_due and the display write window for the core. Called at the
+// end of a catch-up, and after a register access that was not followed by
+// one (the access may have changed what the CRTC or the VIAs do next).
+static MACHINE_NOINLINE void machine_schedule(struct machine *m)
+{
+    uint8_t skip = machine_profile_skip;
+    (void)skip;
+    uint64_t due0 = MACHINE_CYCLES();
+    (void)due0;
+    uint32_t s = m->synced;
+    uint32_t due = s + 4096;  // never let the peripherals lag far
+    int src = 0;
+    (void)src;
+    if (!(skip & 2)) {
+        uint32_t e = via_ticks_to_event(&m->sysvia);
+        uint32_t e2 = via_ticks_to_event(&m->usrvia);
+        if (e2 < e) {
+            e = e2;
+        }
+        uint32_t first_odd = s + 1 + ((s + 1) & 1 ? 0 : 1);
+        uint32_t v = first_odd + 2 * (e - 1);
+        if ((int32_t)(v - due) < 0) {
+            due = v;
+            src = 1;
+        }
+    }
+    if (m->adc_busy && (int32_t)(s + m->adc_countdown - due) < 0) {
+        due = s + m->adc_countdown;
+        src = 2;
+    }
+    if (m->key_head < m->key_count && (int32_t)(m->key_events[m->key_head].cycle - due) < 0) {
+        due = m->key_events[m->key_head].cycle;
+        src = 3;
+    }
+    if (!(skip & 1)) {
+        uint32_t v = s + crtc_ticks_to_check(&m->crtc);
+        if ((int32_t)(v - due) < 0) {
+            due = v;
+            src = 4;
+        }
+    }
+    {
+        uint32_t e = fdc_ticks_to_event(&m->fdc);
+        if (e != 0xffffffffu && (int32_t)(s + e - due) < 0) {
+            due = s + e;
+            src = 5;
+        }
+    }
+    if (m->irq_late) {
+        m->irq_late = 0;
+        due = s + 1;   // (every other term is at least this)
+        src = 3;
+    }
+    if (m->nmi_edge) {
+        due = s;   // the core must take the edge at its next boundary
+        src = 6;
+    }
+    STAT(m->stat_due_src[src]);
+    m->sync_due = due;
+
+    // Display addresses the CRTC will fetch before `due`: the core only
+    // catches up for writes inside this window. Conservative when the
+    // MA range crosses an addressing boundary.
+    {
+        uint32_t chars = due - s;
+        if (!m->crtc.ula_clock_fast) {
+            chars = chars / 2 + 1;
+        }
+        uint32_t ma0 = m->crtc.address_counter;
+        uint32_t ma1 = ma0 + chars + 1;
+        uint32_t lo = machine_display_addr(m, ma0, 0);
+        uint32_t hi = machine_display_addr(m, ma1 & 0x3fff, 7);
+        if (ma1 > 0x3fff || ((ma0 ^ ma1) & 0x3000) || hi < lo || (skip & 1)) {
+            lo = 0;
+            hi = 0x7fff;
+        }
+        m->wlo = lo;
+        m->whi = hi;
+    }
+#ifdef MACHINE_STATS
+    {
+        uint32_t d = due - s, b = 0;
+        while (d > 1 && b < 16) { d >>= 1; b++; }
+        m->stat_due_hist[b]++;
+    }
+    m->stat_clk_due += MACHINE_CYCLES() - due0;
+#endif
+
 }
 
 // `want_due` 0 skips the scheduling at the end (the next sync point and
@@ -592,89 +685,8 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
             }
         }
     }
-    // When must the core come back? The earliest VIA event, ADC completion
-    // or CRTC vsync opportunity; also bound by the CRTC's render lag.
     if (want_due) {
-        uint64_t due0 = MACHINE_CYCLES();
-        (void)due0;
-        uint32_t s = m->synced;
-        uint32_t due = s + 4096;  // never let the peripherals lag far
-        int src = 0;
-        (void)src;
-        if (!(skip & 2)) {
-            uint32_t e = via_ticks_to_event(&m->sysvia);
-            uint32_t e2 = via_ticks_to_event(&m->usrvia);
-            if (e2 < e) {
-                e = e2;
-            }
-            uint32_t first_odd = s + 1 + ((s + 1) & 1 ? 0 : 1);
-            uint32_t v = first_odd + 2 * (e - 1);
-            if ((int32_t)(v - due) < 0) {
-                due = v;
-                src = 1;
-            }
-        }
-        if (m->adc_busy && (int32_t)(s + m->adc_countdown - due) < 0) {
-            due = s + m->adc_countdown;
-            src = 2;
-        }
-        if (m->key_head < m->key_count && (int32_t)(m->key_events[m->key_head].cycle - due) < 0) {
-            due = m->key_events[m->key_head].cycle;
-            src = 3;
-        }
-        if (!(skip & 1)) {
-            uint32_t v = s + crtc_ticks_to_check(&m->crtc);
-            if ((int32_t)(v - due) < 0) {
-                due = v;
-                src = 4;
-            }
-        }
-        {
-            uint32_t e = fdc_ticks_to_event(&m->fdc);
-            if (e != 0xffffffffu && (int32_t)(s + e - due) < 0) {
-                due = s + e;
-                src = 5;
-            }
-        }
-        if (m->irq_late) {
-            m->irq_late = 0;
-            due = s + 1;   // (every other term is at least this)
-            src = 3;
-        }
-        if (m->nmi_edge) {
-            due = s;   // the core must take the edge at its next boundary
-            src = 6;
-        }
-        STAT(m->stat_due_src[src]);
-        m->sync_due = due;
-
-        // Display addresses the CRTC will fetch before `due`: the core only
-        // catches up for writes inside this window. Conservative when the
-        // MA range crosses an addressing boundary.
-        {
-            uint32_t chars = due - s;
-            if (!m->crtc.ula_clock_fast) {
-                chars = chars / 2 + 1;
-            }
-            uint32_t ma0 = m->crtc.address_counter;
-            uint32_t ma1 = ma0 + chars + 1;
-            uint32_t lo = machine_display_addr(m, ma0, 0);
-            uint32_t hi = machine_display_addr(m, ma1 & 0x3fff, 7);
-            if (ma1 > 0x3fff || ((ma0 ^ ma1) & 0x3000) || hi < lo || (skip & 1)) {
-                lo = 0;
-                hi = 0x7fff;
-            }
-            m->wlo = lo;
-            m->whi = hi;
-        }
-#ifdef MACHINE_STATS
-        {
-            uint32_t d = due - s, b = 0;
-            while (d > 1 && b < 16) { d >>= 1; b++; }
-            m->stat_due_hist[b]++;
-        }
-        m->stat_clk_due += MACHINE_CYCLES() - due0;
-#endif
+        machine_schedule(m);
     }
 #ifdef MACHINE_STATS
     m->stat_clk_advance += MACHINE_CYCLES() - adv0;
@@ -898,8 +910,13 @@ INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)
 // Hardware access slow paths, out of line, with no access to the core's
 // state. They catch up first, then spend the stretched cycles themselves
 // and return like machine_sync() with the data byte in bits 24-31. A 1 MHz
-// access catches up and spends its idle cycle or two in one call, with the
-// scheduling left to the tick after the access.
+// access catches up and spends its idle cycle or two in one call. The
+// cycle after the access is left to the next catch-up: the core counts
+// it (the stretch) and carries the IRQ level it last saw, so if the access
+// moved that level, or raised an NMI edge, that cycle is advanced here
+// after all and recorded; otherwise only the scheduling is redone, since
+// the access may have changed what the CRTC or the VIAs do next. A
+// register access is two catch-up calls at most, not three.
 #define IO_SYNC() do { \
         uint32_t r_ = machine_sync(m, cyc); \
         mask = r_ & 0xffff; \
@@ -915,6 +932,25 @@ INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)
         n = r_ >> 16; \
     } while (0)
 #define IO_TICK() do { cyc++; n++; k++; STAT(m->stat_io_ticks); mask = (mask << 1) | (machine_advance(m, cyc) & 1); } while (0)
+#define IO_LEVEL_MOVED() (m->nmi_edge || machine_irq_level(m) != (mask & 1))
+// The cycle after an access (1 MHz devices, the video ULA).
+#define IO_AFTER_TICK() do { \
+        if (IO_LEVEL_MOVED()) { \
+            IO_TICK(); \
+        } else { \
+            k++; \
+            machine_schedule(m); \
+        } \
+    } while (0)
+// An access that ended its cycle (2 MHz devices: the cycle was advanced
+// before it, with its scheduling): only a moved level needs the core
+// back next cycle.
+#define IO_AFTER_ACCESS() do { \
+        if (IO_LEVEL_MOVED()) { \
+            m->irq_late = 1; \
+            machine_schedule(m); \
+        } \
+    } while (0)
 #define IO_RESULT(v) ((mask & 0xfff) | (k << 12) | (n << 16) | ((uint32_t)(v) << 24))
 
 static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t addr, uint32_t cyc)
@@ -927,17 +963,18 @@ static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t 
     if ((addr & 0xff00) != 0xfe00) {
         IO_SYNC_IDLE();
         v = fred_jim_read(m, addr);
-        IO_TICK();
+        IO_AFTER_TICK();
     } else if (is_1mhz(addr)) {
         IO_SYNC_IDLE();
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));  // at the odd count, mid 1 MHz cycle
-        IO_TICK();
+        IO_AFTER_TICK();
     } else {
         IO_SYNC();
         IO_TICK();
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));
+        IO_AFTER_ACCESS();
     }
 #ifdef MACHINE_STATS
     m->stat_clk_io += MACHINE_CYCLES() - io0;
@@ -952,22 +989,23 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
     uint32_t mask, n, k = 0;
     if ((addr & 0xff00) != 0xfe00) {
         IO_SYNC_IDLE();
-        IO_TICK();  // FRED, JIM: 1 MHz, nothing listening
+        IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening
     } else if (is_1mhz(addr)) {
         IO_SYNC_IDLE();
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
-        IO_TICK();
+        IO_AFTER_TICK();
     } else if (addr >= 0xfe20 && addr < 0xfe24) {
         IO_SYNC();
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));  // video ULA: access then tick
-        IO_TICK();
+        IO_AFTER_TICK();
     } else {
         IO_SYNC();
         IO_TICK();
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
+        IO_AFTER_ACCESS();
     }
 #ifdef MACHINE_STATS
     m->stat_clk_io += MACHINE_CYCLES() - io0;

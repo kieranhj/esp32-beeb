@@ -26,14 +26,18 @@
 #define TELETEXT_DATA_ATTR EXT_RAM_BSS_ATTR
 #define RENDER_EMIT(r, first, count, vert) video_emit(r, first, count, vert)
 #define RENDER_PALETTE_HOOK(r) video_palette(r)
+#define RENDER_PALETTE_ENTRY_HOOK(r, logical) video_palette_entry(r, logical)
 #define RENDER_FRAME_HOOK(r) video_frame_done()
+#define RENDER_LINE_HOOK(r) video_line_done(r)
 #define RENDER_CYCLES() esp_cpu_get_cycle_count()
 #define RENDER_LINE2_WANTED(r) video_line2_wanted(r)
 struct render;
 static int video_line2_wanted(const struct render *r);
 struct render;
 static void video_emit(struct render *r, uint32_t first, uint32_t count, int32_t vert);
+static void video_line_done(struct render *r);
 static void video_palette(const struct render *r);
+static void video_palette_entry(const struct render *r, int logical);
 static void video_frame_done(void);
 #include "render.c"
 #include "teletext.c"
@@ -43,6 +47,7 @@ static const char *TAG = "video";
 volatile uint32_t video_frames;
 volatile uint32_t video_overruns;
 volatile uint32_t video_bands;
+volatile uint32_t video_seek_back, video_seek_skip;   // bands sent by a backwards seek; by a forward seek past the next
 volatile uint32_t video_busy_us;
 volatile uint32_t video_words;
 volatile int video_test_mode;
@@ -129,11 +134,15 @@ static inline RENDER_FN void seek_band(int band)
     if (band < s_band) {
         // Rows went backwards without a flyback: the renderer resynced
         // after an overrun. Jump rather than wrap through every band.
+        video_seek_back++;
         flush_band();
         start_band(band);
         return;
     }
     while (s_band != band) {
+        if (s_band + 1 != band) {
+            video_seek_skip++;
+        }
         flush_band();
         start_band((s_band + 1) % DISPLAY_BANDS);
     }
@@ -159,6 +168,13 @@ static RENDER_FN void video_palette(const struct render *r)
     for (int code = 0; code < PX_CODES; code++) {
         s_rgb[code] = s_rgb3[px_resolve((render_px)code, r->logical_to_physical, r->is_flash)];
     }
+}
+
+// One logical colour changed: its two codes (plain and inverted).
+static RENDER_FN void video_palette_entry(const struct render *r, int logical)
+{
+    s_rgb[logical] = s_rgb3[px_resolve((render_px)logical, r->logical_to_physical, r->is_flash)];
+    s_rgb[logical | 32] = s_rgb3[px_resolve((render_px)(logical | 32), r->logical_to_physical, r->is_flash)];
 }
 
 // Panel row y's buffer, cleared outside [i0, i1) on its first touch this
@@ -211,6 +227,16 @@ static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t co
     s_clk_rows += esp_cpu_get_cycle_count() - c0;
 }
 
+// A doubled row that falls in the next band is written when the scanline
+// is complete, not span by span: moving to the next band mid-scanline
+// would send the current band and then seek back into it for the next
+// span, a fresh buffer each time (20 extra bands a frame on a demo with
+// three spans a line).
+static int s_pending_row = -1;      // panel row waiting for the scanline's copy
+static int s_pending_scaled;        // 1: scale line2 into it (teletext); 0: copy row0
+static uint32_t s_line_i0, s_line_i1;   // destination range the scanline's spans covered
+static uint32_t s_line_first, s_line_end;   // and the source range
+
 static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t count, int32_t vert)
 {
     int32_t cy = (vert & ~1) - r->vert_window_start;
@@ -225,8 +251,26 @@ static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t coun
     uint32_t i0 = s_dst_from_src[first];
     uint32_t i1 = s_dst_from_src[first + count];
     write_row(r->line, first, count, row0, i0, i1);
+    if (s_pending_row < 0) {
+        s_line_i0 = i0;
+        s_line_i1 = i1;
+        s_line_first = first;
+        s_line_end = first + count;
+    } else {
+        if (i0 < s_line_i0) {
+            s_line_i0 = i0;
+            s_line_first = first;
+        }
+        if (i1 > s_line_i1) {
+            s_line_i1 = i1;
+            s_line_end = first + count;
+        }
+    }
     if (row1 - row0 == 2) {
-        if (r->mode != RENDER_MODE7 && (row0 + 1) / DISPLAY_BAND_ROWS == s_band) {
+        if ((row0 + 1) / DISPLAY_BAND_ROWS != s_band) {
+            s_pending_row = row0 + 1;
+            s_pending_scaled = (r->mode == RENDER_MODE7);
+        } else if (r->mode != RENDER_MODE7) {
             // Same raster twice: copy the scaled span (teletext's second
             // raster differs, so it is scaled).
             const uint16_t *src = s_last_row;
@@ -238,7 +282,31 @@ static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t coun
         } else {
             write_row(r->line2, first, count, row0 + 1, i0, i1);
         }
+    } else {
+        s_pending_row = -1;
     }
+}
+
+static RENDER_FN void video_line_done(struct render *r)
+{
+    if (s_pending_row < 0) {
+        return;
+    }
+    int row = s_pending_row;
+    s_pending_row = -1;
+    if (s_pending_scaled) {
+        write_row(r->line2, s_line_first, s_line_end - s_line_first, row, s_line_i0, s_line_i1);
+        return;
+    }
+    // The band holding the row is next; the previous buffer is in flight
+    // and still readable.
+    const uint16_t *src = s_last_row;
+    seek_band(row / DISPLAY_BAND_ROWS);
+    uint32_t c0 = esp_cpu_get_cycle_count();
+    s_rows++;
+    uint16_t *dst = row_dst(row, s_line_i0, s_line_i1);
+    memcpy(dst + s_line_i0, src + s_line_i0, (s_line_i1 - s_line_i0) * sizeof(uint16_t));
+    s_clk_rows += esp_cpu_get_cycle_count() - c0;
 }
 
 static RENDER_FN void video_frame_done(void)

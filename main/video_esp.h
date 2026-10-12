@@ -22,7 +22,8 @@ void video_start(struct vstream *vs);
 // Counters for the stats line.
 extern volatile uint32_t video_frames;     // flybacks rendered
 extern volatile uint32_t video_overruns;   // times the ring lapped the renderer
-extern volatile uint32_t video_bands;      // band transfers queued
+extern volatile uint32_t video_bands;
+extern volatile uint32_t video_seek_back, video_seek_skip;      // band transfers queued
 extern volatile uint32_t video_busy_us;    // core 0 time spent rendering
 extern volatile uint32_t video_words;      // stream words consumed
 // Panel path: cycles scaling rows, waiting for a band buffer, queueing a

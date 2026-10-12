@@ -265,9 +265,11 @@ static void beeb_task(void *arg)
             m->crtc.stat_clk_fast = m->crtc.stat_clk_slow = m->crtc.stat_clk_plan = 0;
             memset(m->stat_clk_sheila, 0, sizeof m->stat_clk_sheila);
             memset(m->stat_io_page, 0, sizeof m->stat_io_page);
-            printf("PANEL rows %lu (%lu us) band wait %lu us flush %lu us\n",
+            printf("PANEL rows %lu (%lu us) band wait %lu us flush %lu us  seeks back %lu skip %lu\n",
                    (unsigned long)video_rows, (unsigned long)(video_clk_rows / 240),
-                   (unsigned long)(video_clk_start / 240), (unsigned long)(video_clk_flush / 240));
+                   (unsigned long)(video_clk_start / 240), (unsigned long)(video_clk_flush / 240),
+                   (unsigned long)video_seek_back, (unsigned long)video_seek_skip);
+            video_seek_back = video_seek_skip = 0;
             video_rows = video_clk_rows = video_clk_start = video_clk_flush = 0;
             printf("STATS mode %d  %6.1f clk/cyc  lag max %llu cyc  slices %lu sleeps %lu  "
                    "frames %lu bands %lu overruns %lu  render %lu%% %lu ns/word  pc=%04X\n",
