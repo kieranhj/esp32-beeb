@@ -93,9 +93,12 @@ frames and bands sent, stream overruns, core 0 render load and ns per
 stream word), and a VIDEO line (renderer events, palette writes, table
 rebuild time, time in slow words). Build with `-DBEEB_MEASURE` (add to
 `target_compile_options` in `main/CMakeLists.txt`) to get the first 15 s
-split into no stream / stream dropped / rendered unsent. By default the
-image embeds `discs/crtc-tmoyos.ssd` and autoboots it; `BEEB_TYPE_DEMO`
-types a BASIC line drawer instead.
+split into no stream / stream dropped / rendered unsent. The image embeds
+one disc from `discs/` and autoboots it: `idf.py "-DBEEB_DISC=bs-twisted.ssd"
+build` (quote it: PowerShell splits an unquoted `-D` value at the dot and
+CMake then wipes its cache); the default is `crtc-tmoyos.ssd`, and the
+choice sticks in `build/CMakeCache.txt`. `BEEB_TYPE_DEMO` types a BASIC
+line drawer instead.
 
 Profiling the machine on the board: build with `-DBEEB_PROFILE` and
 `VS_RING=8192` (both in `main/CMakeLists.txt`; the counters cost 13 KB of

@@ -341,7 +341,11 @@ TT_API __attribute__((always_inline)) void teletext_data(struct teletext *t, uin
     if (!is_dispen) {
         dp |= 0x400000;
     }
-    if (decode) {
+    // A byte that entered with DISPEN low is forced to 0x40 and renders
+    // blank (its DISPEN travels with it); decoding it only sets state the
+    // next decoded byte or the line reset overwrites. Skip it: off-window
+    // bytes are a third of a mode 7 line.
+    if (decode && pipelined_dispen) {
         do_data_byte(t, queue_data);
     }
     t->data_pipe = (dp >> 8) | ((uint32_t)data << 16);

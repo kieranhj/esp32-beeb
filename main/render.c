@@ -699,6 +699,25 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
 #undef RUN_2MHZ
 #undef RUN_1MHZ
         }
+        if (mode7 && !blank && pos == pos0) {
+            // Teletext characters: the pipeline then both ticks' pixels,
+            // one pair word per character (a lone tick goes below).
+            while ((w & VS_PAIR) && pos <= RENDER_WIDTH - 16) {
+                teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, TT_DECODE(1));
+                teletext_render_pair(tt, line + pos, line2 + pos, want2);
+                pos += 16;
+                horiz += 16;
+                t++;
+                n--;
+                if (n <= 0 || pos > RENDER_WIDTH - 8) {
+                    break;
+                }
+                w = vs->ring[t & (VS_RING - 1)];
+                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) {
+                    break;
+                }
+            }
+        }
         if (pos == pos0) do {
             uint8_t data = (uint8_t)(w >> 8);
             int odd = w & VS_ODD;
