@@ -21,6 +21,10 @@ extern volatile uint32_t sound_machine_cycle;
 // Speaker volume, 0 to 100 (persisted by the console).
 void sound_set_volume(int volume);
 
+// Mutes or unmutes the speaker, keeping the volume. Returns the new state
+// (1 muted). Not persisted: a restart brings the sound back.
+int sound_toggle_mute(void);
+
 // Counters since the last call: bytes written, output samples, bytes the
 // queue could not take, times the task found nothing to render.
 void sound_stats(uint32_t *writes, uint32_t *samples, uint32_t *drops, uint32_t *starved);

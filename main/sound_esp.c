@@ -77,6 +77,16 @@ void sound_set_volume(int volume)
     }
 }
 
+int sound_toggle_mute(void)
+{
+    static int muted;
+    muted = !muted;
+    if (s_speaker) {
+        esp_codec_dev_set_out_mute(s_speaker, muted);
+    }
+    return muted;
+}
+
 void sound_stats(uint32_t *writes, uint32_t *samples, uint32_t *drops, uint32_t *starved)
 {
     *writes = s_writes;

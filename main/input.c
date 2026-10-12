@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "bundle.h"
 #include "console.h"
+#include "sound_esp.h"
 
 static const char *TAG = "input";
 
@@ -20,7 +21,8 @@ static const char *TAG = "input";
 #define POLL_MS 20
 #define LONG_PRESS_MS 800
 #define SWIPE_PX 60
-#define SHORT_PRESS_MAX_MS 1500    // longer is the power chip's own gesture
+#define SHORT_PRESS_MAX_MS 1500    // released before this: restart
+#define MUTE_PRESS_MS 2000         // held this long: sound off/on (6 s is the power chip's power-off)
 
 // Keyboard matrix positions (row, column).
 #define KEY_SPACE_ROW 6
@@ -125,7 +127,7 @@ static void input_task(void *arg)
     int was_down = 0, x0 = 0, y0 = 0, x = 0, y = 0;
     int64_t down_at = 0;
     int long_sent = 0, space_down = 0;
-    int button_was = 0, agree = 0;
+    int button_was = 0, agree = 0, mute_done = 0;
     int64_t button_at = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(POLL_MS));
@@ -179,9 +181,15 @@ static void input_task(void *arg)
             was_down = down;
         }
 
-        // The PWR button, debounced: a short press restarts.
+        // The PWR button, debounced: a short press restarts; held for 2 s it
+        // toggles the sound at once, so the change is heard while held. The
+        // AXP2101 cuts the power itself at 6 s.
         if (s_expander) {
             int pressed = read_button();
+            if (pressed && button_was && !mute_done && now - button_at >= MUTE_PRESS_MS * 1000) {
+                mute_done = 1;
+                ESP_LOGI(TAG, "PWR held: sound %s", sound_toggle_mute() ? "off" : "on");
+            }
             if (pressed == button_was) {
                 agree = 0;
             } else if (++agree >= 2) {
@@ -189,6 +197,7 @@ static void input_task(void *arg)
                 button_was = pressed;
                 if (pressed) {
                     button_at = now;
+                    mute_done = 0;
                 } else if (now - button_at < SHORT_PRESS_MAX_MS * 1000) {
                     ESP_LOGI(TAG, "PWR: restart");
                     vTaskDelay(pdMS_TO_TICKS(50));
