@@ -40,10 +40,10 @@
 // column axis, which after the row/column exchange is our y.
 #define V2_PANEL_GAP 0x10
 #ifndef DISPLAY_GAP_X
-#define DISPLAY_GAP_X 0
+#define DISPLAY_GAP_X V2_PANEL_GAP
 #endif
 #ifndef DISPLAY_GAP_Y
-#define DISPLAY_GAP_Y V2_PANEL_GAP
+#define DISPLAY_GAP_Y 0
 #endif
 
 #define OPCODE_WRITE_CMD 0x02
@@ -67,8 +67,8 @@ static const char *TAG = "display";
 // and come from the heap: the static image has no room for a third.
 static uint16_t *s_band_buf[DISPLAY_BAND_BUFFERS];
 // Window parameters per band, DMA readable, alive for the whole queue.
-static DMA_ATTR uint8_t s_caset[4];
-static DMA_ATTR uint8_t s_raset[DISPLAY_BANDS][4];
+static DMA_ATTR uint8_t s_caset[DISPLAY_BANDS][4];   // a band is a strip of native columns
+static DMA_ATTR uint8_t s_raset[4];                  // all 448 native rows, set once
 
 static spi_device_handle_t s_dev;
 static SemaphoreHandle_t s_buffers_free;
@@ -189,26 +189,28 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus)
             vTaskDelay(pdMS_TO_TICKS(c->delay_ms));
         }
     }
-    // Landscape: row/column exchange (bit 5) and the chosen mirrors.
-    uint8_t madctl = 0x20 | (DISPLAY_MIRROR_X ? 0x40 : 0) | (DISPLAY_MIRROR_Y ? 0x80 : 0);
+    // Native orientation (the rotation is in the band layout); mirrors only.
+    uint8_t madctl = (DISPLAY_MIRROR_X ? 0x40 : 0) | (DISPLAY_MIRROR_Y ? 0x80 : 0);
     ESP_RETURN_ON_ERROR(write_reg(CMD_MADCTL, &madctl, 1), TAG, "madctl failed");
 
-    // Window parameters for every band, computed once.
-    const int gx = DISPLAY_GAP_X;
-    const int gy = s_is_v2 ? DISPLAY_GAP_Y : 0;
-    s_caset[0] = (uint8_t)(gx >> 8);
-    s_caset[1] = (uint8_t)gx;
-    s_caset[2] = (uint8_t)((gx + DISPLAY_W - 1) >> 8);
-    s_caset[3] = (uint8_t)(gx + DISPLAY_W - 1);
+    // Window parameters for every band, computed once. Band b holds
+    // landscape rows 16b..16b+15, which are native columns
+    // 368 - 16(b+1) .. 368 - 16b - 1 (the picture's top at the right).
+    const int gx = s_is_v2 ? DISPLAY_GAP_X : 0;
+    const int gy = DISPLAY_GAP_Y;
     for (int b = 0; b < DISPLAY_BANDS; b++) {
-        int y0 = gy + b * DISPLAY_BAND_ROWS, y1 = y0 + DISPLAY_BAND_ROWS - 1;
-        s_raset[b][0] = (uint8_t)(y0 >> 8);
-        s_raset[b][1] = (uint8_t)y0;
-        s_raset[b][2] = (uint8_t)(y1 >> 8);
-        s_raset[b][3] = (uint8_t)y1;
+        int x0 = gx + DISPLAY_H - DISPLAY_BAND_ROWS * (b + 1), x1 = x0 + DISPLAY_BAND_ROWS - 1;
+        s_caset[b][0] = (uint8_t)(x0 >> 8);
+        s_caset[b][1] = (uint8_t)x0;
+        s_caset[b][2] = (uint8_t)(x1 >> 8);
+        s_caset[b][3] = (uint8_t)x1;
     }
-    // The column window is the same for every band: set once here.
-    ESP_RETURN_ON_ERROR(write_reg(CMD_CASET, s_caset, 4), TAG, "caset failed");
+    s_raset[0] = (uint8_t)(gy >> 8);
+    s_raset[1] = (uint8_t)gy;
+    s_raset[2] = (uint8_t)((gy + DISPLAY_W - 1) >> 8);
+    s_raset[3] = (uint8_t)(gy + DISPLAY_W - 1);
+    // The row window is the same for every band: set once here.
+    ESP_RETURN_ON_ERROR(write_reg(CMD_RASET, s_raset, 4), TAG, "raset failed");
     return ESP_OK;
 }
 
@@ -229,9 +231,9 @@ esp_err_t display_flush_band(int band, const uint16_t *buffer)
     spi_transaction_t *t = s_trans[s_trans_n++ % DISPLAY_BAND_BUFFERS];
     memset(t, 0, sizeof s_trans[0]);
     t[0].cmd = OPCODE_WRITE_CMD;
-    t[0].addr = CMD_RASET << 8;
+    t[0].addr = CMD_CASET << 8;
     t[0].length = 32;
-    t[0].tx_buffer = s_raset[band];
+    t[0].tx_buffer = s_caset[band];
     t[1].cmd = OPCODE_WRITE_COLOR;
     t[1].addr = CMD_RAMWR << 8;
     t[1].flags = SPI_TRANS_MODE_QIO;

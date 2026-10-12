@@ -647,3 +647,17 @@ Two failures appeared with it, neither caused by it:
   the codec and three more tasks) and xTaskCreatePinnedToCore failed
   silently. Its stack and TCB are static now; 18 KB of internal heap is
   left once everything runs.
+
+## 2026-10-12: the panel in its native orientation
+
+Kieran saw the picture scrambled, each row starting where the last one
+overran. The CO5300 does not honour MADCTL's row/column exchange: rows
+sent 448 pixels wide wrapped onto its native 368 pixel rows. FluidBox
+never used the exchange either. The panel is now driven natively (MADCTL
+mirrors only, the V2 16 pixel gap back on the native column axis, as in
+FluidBox) and the scaler writes each band rotated: a band of 16
+landscape rows is 16 native columns by 448 native rows, landscape pixel
+(r, x) at index x * 16 + 15 - r, sent with a per-band column window and
+a fixed row window. No extra buffer; the scaler's stores become strided
+16-bit ones. Which way round it comes out is a guess until seen: the
+mirror defines in display.h turn it.

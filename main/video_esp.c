@@ -85,8 +85,28 @@ static uint16_t s_rgb[PX_CODES];    // every colour code under the current palet
 static uint16_t *s_buf;
 static int s_band;
 static uint32_t s_rows_written;
-// The last row scaled, so a doubled row in a bitmap mode is a copy.
+// The last row scaled, so a doubled row in a bitmap mode is a copy. A
+// "row" is a strided view of the band buffer: pixel i of landscape row r
+// is at (base of r)[i * BAND_STRIDE] (the band is stored rotated, see
+// display.h).
 static uint16_t *s_last_row;
+#define BAND_STRIDE DISPLAY_BAND_ROWS
+static inline uint16_t *band_row(int row)
+{
+    return s_buf + (DISPLAY_BAND_ROWS - 1 - row);
+}
+static inline void row_fill_black(uint16_t *dst, uint32_t from, uint32_t to)
+{
+    for (uint32_t i = from; i < to; i++) {
+        dst[i * BAND_STRIDE] = 0;
+    }
+}
+static inline void row_copy(uint16_t *dst, const uint16_t *src, uint32_t from, uint32_t to)
+{
+    for (uint32_t i = from; i < to; i++) {
+        dst[i * BAND_STRIDE] = src[i * BAND_STRIDE];
+    }
+}
 
 static void build_tables(void)
 {
@@ -120,7 +140,7 @@ static RENDER_FN void flush_band(void)
     // Rows the beam never reached are black, as on a CRT.
     for (int row = 0; row < DISPLAY_BAND_ROWS; row++) {
         if (!(s_rows_written & (1u << row))) {
-            memset(s_buf + row * DISPLAY_W, 0, DISPLAY_W * sizeof(uint16_t));
+            row_fill_black(band_row(row), 0, DISPLAY_W);
         }
     }
     display_flush_band(s_band, s_buf);
@@ -182,15 +202,11 @@ static RENDER_FN void video_palette_entry(const struct render *r, int logical)
 static inline RENDER_FN uint16_t *row_dst(int y, uint32_t i0, uint32_t i1)
 {
     int row = y - s_band * DISPLAY_BAND_ROWS;
-    uint16_t *dst = s_buf + row * DISPLAY_W;
+    uint16_t *dst = band_row(row);
     if (!(s_rows_written & (1u << row))) {
         s_rows_written |= 1u << row;
-        if (i0 > 0) {
-            memset(dst, 0, i0 * sizeof(uint16_t));
-        }
-        if (i1 < DISPLAY_W) {
-            memset(dst + i1, 0, (DISPLAY_W - i1) * sizeof(uint16_t));
-        }
+        row_fill_black(dst, 0, i0);
+        row_fill_black(dst, i1, DISPLAY_W);
     }
     return dst;
 }
@@ -204,25 +220,33 @@ static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t co
     uint16_t *dst = row_dst(y, i0, i1);
     s_last_row = dst;
     // 7 panel pixels per 10 picture pixels: source offsets 0 1 2 4 5 7 8
-    // within each 10, two groups per iteration so stores are whole words.
+    // within each 10, two groups (14 pixels) per iteration. The band is
+    // stored rotated, so consecutive pixels are BAND_STRIDE apart.
     uint32_t g0 = (i0 + 13) / 14, g1 = i1 / 14;
     for (uint32_t i = i0; i < g0 * 14 && i < i1; i++) {
-        dst[i] = s_rgb[px[s_src_x[i]]];
+        dst[i * BAND_STRIDE] = s_rgb[px[s_src_x[i]]];
     }
     const uint16_t *rgb = s_rgb;
     for (uint32_t g = g0; g < g1; g++) {
         const render_px *sp = px + PIC_X0 + 20 * g;
-        uint32_t *d = (uint32_t *)(dst + 14 * g);
-        d[0] = rgb[sp[0]] | ((uint32_t)rgb[sp[1]] << 16);
-        d[1] = rgb[sp[2]] | ((uint32_t)rgb[sp[4]] << 16);
-        d[2] = rgb[sp[5]] | ((uint32_t)rgb[sp[7]] << 16);
-        d[3] = rgb[sp[8]] | ((uint32_t)rgb[sp[10]] << 16);
-        d[4] = rgb[sp[11]] | ((uint32_t)rgb[sp[12]] << 16);
-        d[5] = rgb[sp[14]] | ((uint32_t)rgb[sp[15]] << 16);
-        d[6] = rgb[sp[17]] | ((uint32_t)rgb[sp[18]] << 16);
+        uint16_t *d = dst + 14 * g * BAND_STRIDE;
+        d[0 * BAND_STRIDE] = rgb[sp[0]];
+        d[1 * BAND_STRIDE] = rgb[sp[1]];
+        d[2 * BAND_STRIDE] = rgb[sp[2]];
+        d[3 * BAND_STRIDE] = rgb[sp[4]];
+        d[4 * BAND_STRIDE] = rgb[sp[5]];
+        d[5 * BAND_STRIDE] = rgb[sp[7]];
+        d[6 * BAND_STRIDE] = rgb[sp[8]];
+        d[7 * BAND_STRIDE] = rgb[sp[10]];
+        d[8 * BAND_STRIDE] = rgb[sp[11]];
+        d[9 * BAND_STRIDE] = rgb[sp[12]];
+        d[10 * BAND_STRIDE] = rgb[sp[14]];
+        d[11 * BAND_STRIDE] = rgb[sp[15]];
+        d[12 * BAND_STRIDE] = rgb[sp[17]];
+        d[13 * BAND_STRIDE] = rgb[sp[18]];
     }
     for (uint32_t i = g1 * 14 > i0 ? g1 * 14 : i0; i < i1; i++) {
-        dst[i] = s_rgb[px[s_src_x[i]]];
+        dst[i * BAND_STRIDE] = s_rgb[px[s_src_x[i]]];
     }
     s_clk_rows += esp_cpu_get_cycle_count() - c0;
 }
@@ -277,7 +301,7 @@ static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t coun
             uint32_t c0 = esp_cpu_get_cycle_count();
             s_rows++;
             uint16_t *dst = row_dst(row0 + 1, i0, i1);
-            memcpy(dst + i0, src + i0, (i1 - i0) * sizeof(uint16_t));
+            row_copy(dst, src, i0, i1);
             s_clk_rows += esp_cpu_get_cycle_count() - c0;
         } else {
             write_row(r->line2, first, count, row0 + 1, i0, i1);
@@ -305,7 +329,7 @@ static RENDER_FN void video_line_done(struct render *r)
     uint32_t c0 = esp_cpu_get_cycle_count();
     s_rows++;
     uint16_t *dst = row_dst(row, s_line_i0, s_line_i1);
-    memcpy(dst + s_line_i0, src + s_line_i0, (s_line_i1 - s_line_i0) * sizeof(uint16_t));
+    row_copy(dst, src, s_line_i0, s_line_i1);
     s_clk_rows += esp_cpu_get_cycle_count() - c0;
 }
 
