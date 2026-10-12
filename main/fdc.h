@@ -85,7 +85,7 @@ void fdc_break_reset(struct fdc *f);
 uint8_t fdc_read(struct fdc *f, uint16_t addr);
 void fdc_write(struct fdc *f, uint16_t addr, uint8_t val);
 // Cycles until the next timer fires, or 0xffffffff.
-uint32_t fdc_ticks_to_event(const struct fdc *f);
+// (defined by fdc.c as FDC_HOT_API, which the machine makes static inline in IRAM)
 // Moves `n` cycles on (n at most fdc_ticks_to_event) and fires what is
 // due. `now` is the cycle count after the advance, for the drive's noise.
 void fdc_advance(struct fdc *f, uint32_t n, uint32_t now);

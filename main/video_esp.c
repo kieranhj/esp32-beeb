@@ -16,7 +16,11 @@
 // The renderer is built into this file with the board's pixel type and its
 // output going to the scaler below instead of a canvas.
 #define RENDER_INDEXED 1
+#ifdef BEEB_PROFILE
+#define RENDER_FN   // the profile build needs the IRAM for the machine's counters
+#else
 #define RENDER_FN IRAM_ATTR
+#endif
 // The glyph sets (11 KB) live in PSRAM: two byte reads per character per
 // raster go through the cache; internal RAM is the scarce thing.
 #define TELETEXT_DATA_ATTR EXT_RAM_BSS_ATTR

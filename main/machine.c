@@ -26,10 +26,16 @@
 #define MACHINE_CODE_ATTR
 #endif
 #define MACHINE_NOINLINE MACHINE_CODE_ATTR __attribute__((noinline))
+#ifndef MACHINE_CYCLES
+#define MACHINE_CYCLES() 0u
+#endif
+#define CRTC_CYCLES() MACHINE_CYCLES()
 #ifdef MACHINE_STATS
 #define STAT(x) ((x)++)
+#define STAT_CLK(field, expr) do { uint64_t c0_ = MACHINE_CYCLES(); expr; (field) += MACHINE_CYCLES() - c0_; } while (0)
 #else
 #define STAT(x) ((void)0)
+#define STAT_CLK(field, expr) do { expr; } while (0)
 #endif
 #define VIA_API static MACHINE_CODE_ATTR
 #define CRTC_API MACHINE_CODE_ATTR
@@ -74,12 +80,50 @@ INLINE struct machine *crtc_owner(struct crtc *c);
         } \
     } while (0)
 #define CRTC_RUN_END(c) do { if (vs_) vs_->head = vh_; } while (0)
+// Linear fetch runs: a load and a store per character.
+INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra, uint32_t tick,
+                                const uint8_t **p, uint32_t *stride, uint32_t *chars);
+#define CRTC_FETCH_RUN(c, ma, ra, tick, pp, pstride, pchars) \
+    machine_display_run(crtc_owner(c), ma, ra, tick, pp, pstride, pchars)
+#define CRTC_RUN_RENDER_CHARS(c, p, stride, chars, dispen, tick, ma13, ma, ra, data) do { \
+        const uint8_t *q_ = (p); \
+        uint32_t st_ = (stride), n_ = (chars); \
+        if (vs_) { \
+            uint32_t fl_ = ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2); \
+            uint32_t odd_ = (tick) & 1; \
+            for (uint32_t k_ = 0; k_ < n_; k_++) { \
+                data = *q_; \
+                q_ += st_; \
+                vs_->ring[vh_ & (VS_RING - 1)] = (uint16_t)((data << 8) | fl_ | odd_); \
+                vh_++; \
+                odd_ ^= 1; \
+            } \
+        } else { \
+            data = q_[st_ * (n_ - 1)]; \
+        } \
+    } while (0)
+#define CRTC_RUN_RENDER_PAIRS(c, p, stride, chars, dispen, ma13, ma, ra, data) do { \
+        const uint8_t *q_ = (p); \
+        uint32_t st_ = (stride), n_ = (chars); \
+        if (vs_) { \
+            uint32_t fl_ = VS_PAIR | ((dispen) ? VS_DISPEN : 0) | ((ma13) << 2); \
+            for (uint32_t k_ = 0; k_ < n_; k_++) { \
+                data = *q_; \
+                q_ += st_; \
+                vs_->ring[vh_ & (VS_RING - 1)] = (uint16_t)((data << 8) | fl_); \
+                vh_++; \
+            } \
+        } else { \
+            data = q_[st_ * (n_ - 1)]; \
+        } \
+    } while (0)
 #include "crtc.c"
 // The disc side is cold code (one call per 64 us while a disc spins):
 // keep it, and everything it inlines, out of the IRAM functions that call
 // it. On the board that leaves it in flash.
 #define DISC_API __attribute__((noinline))
 #define FDC_API __attribute__((noinline))
+#define FDC_HOT_API static inline MACHINE_CODE_ATTR
 #include "disc.c"
 #include "fdc.c"
 
@@ -369,6 +413,58 @@ INLINE uint8_t machine_display_fetch(struct machine *m, uint16_t ma, uint8_t ra,
     return m->ram[addr];
 }
 
+// A linear run of display fetches from MA: the byte for MA, the step to the
+// next character's byte and how many characters (at least 1) the run stays
+// linear for: up to the next MA wrap boundary (the IC32 wrap term changes
+// at multiples of 0x1000) and the end of the RAM region the address falls
+// in. A 2 MHz bitmap fetch through MODE 7 addressing alternates between
+// two bytes, so it runs one character at a time.
+INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra, uint32_t tick,
+                                const uint8_t **p, uint32_t *stride, uint32_t *chars)
+{
+    if (ma & 0x2000) {
+        uint32_t addr = 0x7c00 | (ma & 0x3ff);
+        if (!m->crtc.ula_teletext && m->crtc.ula_clock_fast) {
+            if (!(tick & 1)) {
+                addr ^= 64;
+            }
+            *p = m->display_base + addr;
+            *stride = 0;
+            *chars = 1;
+            return;
+        }
+        *p = m->display_base + addr;
+        *stride = 1;
+        *chars = 0x400 - (ma & 0x3ff);
+        return;
+    }
+    uint32_t addr = (uint32_t)ma * 8 + (ra & 7);
+    if (ma & 0x1000) {
+        addr -= m->crtc.screen_wrap_add;
+    }
+    addr &= 0x7fff;
+    const uint8_t *base;
+    uint32_t end;
+    if (addr >= 0x3000) {
+        base = m->display_base;
+        end = 0x8000;
+    } else if ((m->acccon & 1) && addr < 0x1000 && (m->romsel & 0x80)) {
+        base = m->andy;
+        end = 0x1000;
+    } else if ((m->acccon & 1) && addr >= 0x1000 && (m->acccon & 0x08)) {
+        base = m->hazel - 0x1000;
+        end = 0x3000;
+    } else {
+        base = m->ram;
+        end = ((m->acccon & 1) && addr < 0x1000) ? 0x1000 : 0x3000;
+    }
+    *p = base + addr;
+    *stride = 8;
+    uint32_t n = (end - addr + 7) / 8;
+    uint32_t to_wrap = 0x1000 - (ma & 0xfff);
+    *chars = n < to_wrap ? n : to_wrap;
+}
+
 // Advances the peripherals from m->synced to `cyc` in chunks delimited by
 // events (VIA timer underflow or reload, ADC completion, a CRTC vsync
 // change), so the VIAs and ADC step by subtraction and only the CRTC loops
@@ -378,13 +474,26 @@ INLINE uint8_t machine_display_fetch(struct machine *m, uint16_t ma, uint8_t ra,
 // VIA ticks land on odd cycle counts; for a chunk ending at count e the
 // VIA tick count is odd(e) - odd(s) where odd(x) is the number of odd
 // integers up to x.
+static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t cyc, int want_due);
 static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc)
+{
+    return machine_advance_ex(m, cyc, 1);
+}
+
+// `want_due` 0 skips the scheduling at the end (the next sync point and
+// the display write window) when the caller advances again at once.
+static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t cyc, int want_due)
 {
     uint32_t mask = 0;
     uint32_t total = cyc - m->synced;
     uint8_t skip = machine_profile_skip;
 
     STAT(m->stat_calls);
+    if (total == 0) {
+        STAT(m->stat_zero_calls);
+    }
+    uint64_t adv0 = MACHINE_CYCLES();
+    (void)adv0;
     while (m->synced != cyc) {
         uint32_t s = m->synced;
         STAT(m->stat_chunks);
@@ -425,13 +534,15 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
         // The CRTC may cut the chunk short at a vsync change.
         uint32_t done = w;
         if (!(skip & 1)) {
-            done = crtc_run(&m->crtc, s, w);
+            STAT_CLK(m->stat_clk_crtc, done = crtc_run(&m->crtc, s, w));
         }
 
         // VIAs over `done` cycles; the event tick, if this chunk ends on
         // it, is stepped exactly.
         if (!(skip & 2)) {
             uint32_t k = ((s + done + 1) >> 1) - ((s + 1) >> 1);
+            uint64_t v0 = MACHINE_CYCLES();
+            (void)v0;
             if (done == via_e) {
                 via_advance(&m->sysvia, k - 1);
                 via_advance(&m->usrvia, k - 1);
@@ -441,6 +552,9 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
                 via_advance(&m->sysvia, k);
                 via_advance(&m->usrvia, k);
             }
+#ifdef MACHINE_STATS
+            m->stat_clk_via += MACHINE_CYCLES() - v0;
+#endif
         }
         if (m->adc_busy) {
             m->adc_countdown -= done;
@@ -452,7 +566,7 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
         }
         m->synced = s + done;
         if (fdc_e != 0xffffffffu) {
-            fdc_advance(&m->fdc, done, m->synced);
+            STAT_CLK(m->stat_clk_fdc, fdc_advance(&m->fdc, done, m->synced));
         }
 
         // History: the old level for all but the last cycle of the chunk,
@@ -476,9 +590,13 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
     }
     // When must the core come back? The earliest VIA event, ADC completion
     // or CRTC vsync opportunity; also bound by the CRTC's render lag.
-    {
+    if (want_due) {
+        uint64_t due0 = MACHINE_CYCLES();
+        (void)due0;
         uint32_t s = m->synced;
         uint32_t due = s + 4096;  // never let the peripherals lag far
+        int src = 0;
+        (void)src;
         if (!(skip & 2)) {
             uint32_t e = via_ticks_to_event(&m->sysvia);
             uint32_t e2 = via_ticks_to_event(&m->usrvia);
@@ -489,29 +607,36 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
             uint32_t v = first_odd + 2 * (e - 1);
             if ((int32_t)(v - due) < 0) {
                 due = v;
+                src = 1;
             }
         }
         if (m->adc_busy && (int32_t)(s + m->adc_countdown - due) < 0) {
             due = s + m->adc_countdown;
+            src = 2;
         }
         if (m->key_head < m->key_count && (int32_t)(m->key_events[m->key_head].cycle - due) < 0) {
             due = m->key_events[m->key_head].cycle;
+            src = 3;
         }
         if (!(skip & 1)) {
             uint32_t v = s + crtc_ticks_to_check(&m->crtc);
             if ((int32_t)(v - due) < 0) {
                 due = v;
+                src = 4;
             }
         }
         {
             uint32_t e = fdc_ticks_to_event(&m->fdc);
             if (e != 0xffffffffu && (int32_t)(s + e - due) < 0) {
                 due = s + e;
+                src = 5;
             }
         }
         if (m->nmi_edge) {
             due = s;   // the core must take the edge at its next boundary
+            src = 6;
         }
+        STAT(m->stat_due_src[src]);
         m->sync_due = due;
 
         // Display addresses the CRTC will fetch before `due`: the core only
@@ -539,9 +664,15 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
             while (d > 1 && b < 16) { d >>= 1; b++; }
             m->stat_due_hist[b]++;
         }
+        m->stat_clk_due += MACHINE_CYCLES() - due0;
 #endif
     }
-    return mask | (total << 16);
+#ifdef MACHINE_STATS
+    m->stat_clk_advance += MACHINE_CYCLES() - adv0;
+#endif
+    // The history is 16 bits: a longer window is reported as 16 so the
+    // core's shift clears the old bits (a shift by 32 or more would not).
+    return mask | ((total > 16 ? 16 : total) << 16);
 }
 
 // ---- small peripherals ---------------------------------------------------------
@@ -716,14 +847,22 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
         fdc_write(&m->fdc, 4 + (addr & 3), val);
         break;
     case 0xfe30:
-        m->romsel = val;
-        remap_sideways(m);
+        if (val != m->romsel) {
+            m->romsel = val;
+            remap_sideways(m);
+        }
         break;
-    case 0xfe34:
+    case 0xfe34: {
+        uint8_t old = m->acccon;
         m->acccon = val;
-        remap_shadow(m);
-        remap_hazel(m);
+        if ((old ^ val) & 0x0f) {   // D, E, X, Y: the 0x3000 window and the display
+            remap_shadow(m);
+        }
+        if ((old ^ val) & 0x08) {   // Y: HAZEL
+            remap_hazel(m);
+        }
         break;
+    }
     case 0xfe40: case 0xfe44: case 0xfe48: case 0xfe4c:
     case 0xfe50: case 0xfe54: case 0xfe58: case 0xfe5c:
         via_write(&m->sysvia, addr & 0xf, val);
@@ -749,75 +888,99 @@ INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)
 
 // Hardware access slow paths, out of line, with no access to the core's
 // state. They catch up first, then spend the stretched cycles themselves
-// and return like machine_sync() with the data byte in bits 24-31.
-#define IO_TICK() do { cyc++; n++; k++; mask = (mask << 1) | (machine_advance(m, cyc) & 1); } while (0)
+// and return like machine_sync() with the data byte in bits 24-31. A 1 MHz
+// access catches up and spends its idle cycle or two in one call, with the
+// scheduling left to the tick after the access.
+#define IO_SYNC() do { \
+        uint32_t r_ = machine_sync(m, cyc); \
+        mask = r_ & 0xffff; \
+        n = r_ >> 16; \
+    } while (0)
+#define IO_SYNC_IDLE() do { \
+        uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2; \
+        cyc += t_; \
+        k += t_; \
+        STAT(m->stat_io_ticks); \
+        uint32_t r_ = machine_advance_ex(m, cyc, 0); \
+        mask = r_ & 0xffff; \
+        n = r_ >> 16; \
+    } while (0)
+#define IO_TICK() do { cyc++; n++; k++; STAT(m->stat_io_ticks); mask = (mask << 1) | (machine_advance(m, cyc) & 1); } while (0)
 #define IO_RESULT(v) ((mask & 0xfff) | (k << 12) | (n << 16) | ((uint32_t)(v) << 24))
 
 static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t addr, uint32_t cyc)
 {
-    uint32_t r = machine_sync(m, cyc);
-    uint32_t mask = r & 0xffff, n = r >> 16, k = 0;
+    STAT(m->stat_sync_io);
+    uint64_t io0 = MACHINE_CYCLES();
+    (void)io0;
+    uint32_t mask, n, k = 0;
     uint8_t v;
     if ((addr & 0xff00) != 0xfe00) {
-        IO_TICK();
-        if (!(cyc & 1)) {
-            IO_TICK();
-        }
+        IO_SYNC_IDLE();
         v = fred_jim_read(m, addr);
         IO_TICK();
     } else if (is_1mhz(addr)) {
-        IO_TICK();
-        if (!(cyc & 1)) {  // c was odd: two idle cycles
-            IO_TICK();
-        }
-        v = sheila_read(m, addr);  // at the odd count, mid 1 MHz cycle
+        IO_SYNC_IDLE();
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));  // at the odd count, mid 1 MHz cycle
         IO_TICK();
     } else {
+        IO_SYNC();
         IO_TICK();
-        v = sheila_read(m, addr);
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));
     }
+#ifdef MACHINE_STATS
+    m->stat_clk_io += MACHINE_CYCLES() - io0;
+#endif
     return IO_RESULT(v);
 }
 
 static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t addr, uint32_t cyc, uint8_t val)
 {
-    uint32_t r = machine_sync(m, cyc);
-    uint32_t mask = r & 0xffff, n = r >> 16, k = 0;
+    uint64_t io0 = MACHINE_CYCLES();
+    (void)io0;
+    uint32_t mask, n, k = 0;
     if ((addr & 0xff00) != 0xfe00) {
-        IO_TICK();
-        if (!(cyc & 1)) {
-            IO_TICK();
-        }
+        IO_SYNC_IDLE();
         IO_TICK();  // FRED, JIM: 1 MHz, nothing listening
     } else if (is_1mhz(addr)) {
-        IO_TICK();
-        if (!(cyc & 1)) {
-            IO_TICK();
-        }
-        sheila_write(m, addr, val);
+        IO_SYNC_IDLE();
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
         IO_TICK();
     } else if (addr >= 0xfe20 && addr < 0xfe24) {
-        sheila_write(m, addr, val);  // video ULA: access then tick
+        IO_SYNC();
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));  // video ULA: access then tick
         IO_TICK();
     } else {
+        IO_SYNC();
         IO_TICK();
-        sheila_write(m, addr, val);
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
     }
+#ifdef MACHINE_STATS
+    m->stat_clk_io += MACHINE_CYCLES() - io0;
+#endif
     return IO_RESULT(0);
 }
 
-#undef IO_TICK
-#undef IO_RESULT
-
-// ---- the core, specialised for this machine -------------------------------
-
-struct cpu6502;
 static void machine_cpu_sync(struct cpu6502 *cpu);
 static inline __attribute__((always_inline)) uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr);
 static inline __attribute__((always_inline)) void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val);
 
 #define CPU6502_SYNC(cpu) machine_cpu_sync(cpu)
-#define CPU6502_SYNC_WRITE(cpu) (STAT(((struct machine *)(cpu)->m)->stat_sync_write), machine_cpu_sync(cpu))
+#ifdef MACHINE_STATS
+static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
+{
+    ((struct machine *)cpu->m)->stat_sync_write++;
+    machine_cpu_sync(cpu);
+}
+#define CPU6502_SYNC_WRITE(cpu) machine_cpu_sync_write(cpu)
+#else
+#define CPU6502_SYNC_WRITE(cpu) machine_cpu_sync(cpu)
+#endif
 #define CPU6502_IO_RD(cpu, addr) machine_io_rd(cpu, addr)
 #define CPU6502_IO_WR(cpu, addr, v) machine_io_wr(cpu, addr, v)
 #define CPU6502_CODE_ATTR MACHINE_CODE_ATTR
@@ -871,7 +1034,6 @@ INLINE void machine_io_apply(struct cpu6502 *cpu, uint32_t r)
 
 INLINE uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr)
 {
-    STAT(((struct machine *)cpu->m)->stat_sync_io);
     uint32_t r = machine_io_rd_slow((struct machine *)cpu->m, addr, cpu->cyc);
     machine_io_apply(cpu, r);
     return (uint8_t)(r >> 24);

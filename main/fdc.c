@@ -1078,7 +1078,11 @@ static void drive_tick(struct fdc *f, struct fdc_drive *d, uint32_t now)
     d->timer_seq = ++f->seq;
 }
 
-FDC_API uint32_t fdc_ticks_to_event(const struct fdc *f)
+// Runs once per machine chunk: hot, unlike the rest of this file.
+#ifndef FDC_HOT_API
+#define FDC_HOT_API FDC_API
+#endif
+FDC_HOT_API uint32_t fdc_ticks_to_event(const struct fdc *f)
 {
     uint32_t e = 0xffffffffu;
     if (f->timer_state != T_NONE && f->timer < e) {

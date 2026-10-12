@@ -25,6 +25,9 @@
 #ifndef CRTC_TELETEXT
 #define CRTC_TELETEXT(c, data, dispen) ((void)0)
 #endif
+#ifndef CRTC_CYCLES
+#define CRTC_CYCLES() 0u
+#endif
 #ifndef CRTC_RA
 #define CRTC_RA(c, ra, isv) ((void)0)
 #endif
@@ -335,7 +338,8 @@ CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c)
 // means the next tick must take the exact path.
 CRTC_INLINE uint32_t crtc_fast_ticks(const struct crtc *c, uint32_t tick)
 {
-    if (c->start_of_line_state_checks || c->in_hsync || c->cursor_skew_counter >= 0) {
+    // (An hsync in progress is only a countdown: the fast path does it.)
+    if (c->start_of_line_state_checks || c->cursor_skew_counter >= 0) {
         return 0;
     }
     uint8_t dispen = (c->display_enable_bits == DISPEN_ALL);
@@ -387,8 +391,36 @@ CRTC_INLINE uint32_t crtc_fast_ticks(const struct crtc *c, uint32_t tick)
     } while (0)
 #define CRTC_RUN_END(c) ((void)0)
 #endif
+// Linear fetch runs: the owner may give the fast path a pointer to the
+// byte for MA, the step to the next character's byte and how many
+// characters (at least 1) the run stays linear for, so the loop is a load
+// and a store per character. Without that, one character at a time
+// through CRTC_FETCH.
+#ifndef CRTC_FETCH_RUN
+#define CRTC_FETCH_RUN(c, ma, ra, tick, pp, pstride, pchars) do { \
+        (void)(c); (void)(ma); (void)(ra); (void)(tick); \
+        *(pp) = 0; *(pstride) = 0; *(pchars) = 1; \
+    } while (0)
+// `chars` characters at 2 MHz from `ma`, one tick each; leaves the last byte in `data`.
+#define CRTC_RUN_RENDER_CHARS(c, p, stride, chars, dispen, tick, ma13, ma, ra, data) do { \
+        for (uint32_t k_ = 0; k_ < (chars); k_++) { \
+            int odd_ = ((tick) + k_) & 1; \
+            data = CRTC_FETCH(c, (uint16_t)(((ma) + k_) & 0x3fff), ra, odd_); \
+            CRTC_RUN_RENDER(c, data, dispen, odd_, ma13); \
+        } \
+    } while (0)
+// `chars` characters at 1 MHz from `ma`, two ticks each, as pair words.
+#define CRTC_RUN_RENDER_PAIRS(c, p, stride, chars, dispen, ma13, ma, ra, data) do { \
+        for (uint32_t k_ = 0; k_ < (chars); k_++) { \
+            data = CRTC_FETCH(c, (uint16_t)(((ma) + k_) & 0x3fff), ra, 0); \
+            CRTC_RUN_RENDER_PAIR(c, data, dispen, ma13); \
+        } \
+    } while (0)
+#endif
 
-// The fast path: `n` ticks that only fetch, render and count.
+// The fast path: `n` ticks that only fetch, render and count. Fetches go
+// in linear runs (CRTC_FETCH_RUN) cut at the addressing boundaries; MA13
+// is constant within one, so the stream flags are too.
 CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
 {
     CRTC_RUN_BEGIN(c);
@@ -401,39 +433,62 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
     uint8_t data = c->data_byte;
     uint8_t ma13 = c->data_ma13;
     uint8_t hc = c->horiz_counter;
-    if (c->ula_clock_fast) {
-        for (uint32_t i = 0; i < n; i++, tick++) {
-            int odd = tick & 1;
-            data = CRTC_FETCH(c, ma, ra, odd);
-            ma13 = (ma >> 13) & 1;
-            if (!odd) {
-                CRTC_TELETEXT(c, ma13 ? data : 0, ma13 ? dispen : 0);
-            }
-            ma = (ma + 1) & 0x3fff;
-            CRTC_RUN_RENDER(c, data, dispen, odd, ma13);
-            hc++;
+    uint32_t i = 0;
+    if (c->in_hsync) {
+        // The hsync counter steps once per fetch tick (every tick at 2 MHz,
+        // the even ticks at 1 MHz). A new hsync can only start at an R2
+        // hit, which is never inside a run.
+        uint32_t fetches = c->ula_clock_fast ? n : ((tick & 1) ? n / 2 : (n + 1) / 2);
+        if (c->hsync_tick_counter > fetches) {
+            c->hsync_tick_counter -= fetches;
+        } else {
+            c->hsync_tick_counter = 0;
+            c->in_hsync = 0;
         }
+    }
+    if (c->ula_clock_fast) {
+        while (i < n) {
+            const uint8_t *p;
+            uint32_t stride, chars;
+            CRTC_FETCH_RUN(c, ma, ra, tick + i, &p, &stride, &chars);
+            if (chars > n - i) {
+                chars = n - i;
+            }
+            ma13 = (ma >> 13) & 1;
+            CRTC_RUN_RENDER_CHARS(c, p, stride, chars, dispen, tick + i, ma13, ma, ra, data);
+            ma = (ma + chars) & 0x3fff;
+            i += chars;
+        }
+        hc = (uint8_t)(hc + n);
     } else {
         // 1 MHz: the even tick fetches, the odd one counts. Both ticks of a
         // character inside the run go out as one pair word.
-        for (uint32_t i = 0; i < n; i++, tick++) {
-            if (!(tick & 1)) {
-                data = CRTC_FETCH(c, ma, ra, 0);
-                ma13 = (ma >> 13) & 1;
-                CRTC_TELETEXT(c, ma13 ? data : 0, ma13 ? dispen : 0);
-                ma = (ma + 1) & 0x3fff;
-                if (i + 1 < n) {
-                    CRTC_RUN_RENDER_PAIR(c, data, dispen, ma13);
-                    i++;
-                    tick++;
-                    hc++;
-                    continue;
-                }
-                CRTC_RUN_RENDER(c, data, dispen, 0, ma13);
-            } else {
-                CRTC_RUN_RENDER(c, data, dispen, 1, ma13);
-                hc++;
+        if (tick & 1) {
+            CRTC_RUN_RENDER(c, data, dispen, 1, ma13);   // the odd tick of the current character
+            hc++;
+            i++;
+        }
+        while (i + 1 < n) {
+            const uint8_t *p;
+            uint32_t stride, chars;
+            CRTC_FETCH_RUN(c, ma, ra, tick + i, &p, &stride, &chars);
+            uint32_t avail = (n - i) / 2;
+            if (chars > avail) {
+                chars = avail;
             }
+            ma13 = (ma >> 13) & 1;
+            CRTC_RUN_RENDER_PAIRS(c, p, stride, chars, dispen, ma13, ma, ra, data);
+            ma = (ma + chars) & 0x3fff;
+            i += 2 * chars;
+            hc = (uint8_t)(hc + chars);
+        }
+        if (i < n) {
+            // A lone even tick: fetch and render the first half.
+            data = CRTC_FETCH(c, ma, ra, 0);
+            ma13 = (ma >> 13) & 1;
+            ma = (ma + 1) & 0x3fff;
+            CRTC_RUN_RENDER(c, data, dispen, 0, ma13);
+            i++;
         }
     }
     CRTC_RUN_END(c);
@@ -451,22 +506,54 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
     uint32_t i = 0;
     c->vsync_changed = 0;
     while (i < n) {
+#ifdef MACHINE_STATS
+        uint64_t p0 = CRTC_CYCLES();
+#endif
         uint32_t fast = crtc_fast_ticks(c, first + i);
         if (fast > n - i) {
             fast = n - i;
         }
+#ifdef MACHINE_STATS
+        uint64_t p1 = CRTC_CYCLES();
+        c->stat_clk_plan += p1 - p0;
+#endif
         if (fast) {
             crtc_fast(c, first + i, fast);
             i += fast;
 #ifdef MACHINE_STATS
             c->stat_fast += fast;
+            c->stat_runs++;
+            c->stat_clk_fast += CRTC_CYCLES() - p1;
 #endif
             continue;
         }
+#ifdef MACHINE_STATS
+        {
+            // Why the exact path: 0 line-start chain, 1 hsync, 2 cursor skew,
+            // 3 dispen pipeline, 4 counter hit (R0/R1/R2/half-R0/cursor), 5 other
+            int why = 5;
+            uint32_t hc = c->horiz_counter;
+            uint8_t dispen = (c->display_enable_bits == DISPEN_ALL);
+            if (c->start_of_line_state_checks) {
+                why = 0;
+            } else if (c->in_hsync) {
+                why = 1;
+            } else if (c->cursor_skew_counter >= 0) {
+                why = 2;
+            } else if (c->dispen_shifts[0] != dispen || c->dispen_shifts[1] != dispen || c->dispen_shifts[2] != dispen) {
+                why = 3;
+            } else if (hc == c->reg[CRTC_R0_HTOTAL] || hc == c->reg[CRTC_R1_HDISP] || hc == c->reg[CRTC_R2_HSYNC] ||
+                       hc + 1 == c->half_r0) {
+                why = 4;
+            }
+            c->stat_slow_why[why]++;
+        }
+#endif
         crtc_tick(c, first + i);
         i++;
 #ifdef MACHINE_STATS
         c->stat_slow++;
+        c->stat_clk_slow += CRTC_CYCLES() - p1;
 #endif
         if (c->vsync_changed) {
             break;

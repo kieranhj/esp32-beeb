@@ -76,7 +76,9 @@ struct crtc {
     uint8_t data_byte;
     uint8_t data_ma13;                   // MA13 of the last fetch
     uint8_t vsync_changed;               // set by crtc_update_vsync, cleared by crtc_run
-    uint32_t stat_fast, stat_slow;       // ticks by path, with MACHINE_STATS
+    uint32_t stat_fast, stat_slow;
+    uint64_t stat_clk_fast, stat_clk_slow, stat_clk_plan;   // CRTC_CYCLES() in each
+    uint32_t stat_runs, stat_slow_why[8];   // fast runs; exact ticks by cause (see crtc_run)       // ticks by path, with MACHINE_STATS
 };
 
 void crtc_reset(struct crtc *c);

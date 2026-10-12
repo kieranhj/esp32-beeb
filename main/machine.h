@@ -37,6 +37,11 @@ struct machine {
     uint32_t stat_calls, stat_chunks;
     uint32_t stat_sync_boundary, stat_sync_write, stat_sync_io;
     uint32_t stat_due_hist[17];
+    uint32_t stat_due_src[8];
+    uint64_t stat_clk_advance, stat_clk_crtc, stat_clk_via, stat_clk_fdc, stat_clk_io, stat_clk_due;   // MACHINE_CYCLES()
+    uint64_t stat_clk_sheila[8];   // register handling alone, by (addr >> 4) & 7 within SHEILA
+    uint32_t stat_io_page[8];
+    uint32_t stat_io_ticks, stat_zero_calls;   // IO_TICK advance calls; calls with nothing to run   // which term set the due cycle: 0 cap, 1 via, 2 adc, 3 key, 4 crtc, 5 fdc, 6 nmi
 
     uint8_t ram[0x8000];
     uint8_t lynne[0x5000];
