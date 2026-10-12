@@ -587,6 +587,8 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
             due = s + e;
             src = 5;
         }
+        // The quiet VIA path steps neither the 1770 nor the ADC.
+        m->quiet_ok = (e == 0xffffffffu) && !m->adc_busy;
     }
     if (m->irq_late) {
         m->irq_late = 0;
@@ -994,43 +996,34 @@ INLINE int io_needs_crtc(const struct machine *m, uint16_t addr, uint32_t cyc)
 
 // A VIA access with nothing else going on: the demos' vsync polling loops
 // read the system VIA's IFR every eight cycles, and a sample player
-// writes it as often. When no VIA event, ADC, key, 1770 or possible vsync
-// change falls in the window, the VIAs are stepped by subtraction, the
-// IRQ history is the level held, the CRTC is left behind, and the
-// scheduling afterwards is the VIA's next event against the sync point
-// the display write window was computed for (so that window stays
-// valid). Anything else falls through to the general path.
+// writes it as often. The scheduler's sync point is already the earliest
+// event of every kind (VIA timers, ADC, keys, a possible vsync change,
+// the 1770, a late IRQ or NMI edge), and nothing but a VIA access has
+// happened since it was computed; so if the access cycle falls before it,
+// with the 1770 and ADC idle (they are not stepped here) and no key
+// queued since, the VIAs are stepped by subtraction, the IRQ history is
+// the level held and the CRTC is left behind. The access cycle itself
+// must be before the sync point: an event tick on it has to be stepped
+// exactly. A read cannot move a timer event, so the sync point stands; a
+// write reschedules from the VIA's next event against the sync point the
+// display write window was computed for (so that window stays valid).
+// Anything else falls through to the general path.
 // Inline: a call level fewer under the core, whose register windows are
 // what an access costs most (the callee chain overflows them).
 INLINE int io_quiet_window(struct machine *m, uint32_t end, uint32_t *mask, uint32_t *n)
 {
+    if (!m->quiet_ok || (int32_t)(end - m->sync_due) >= 0 || m->key_head < m->key_count) {
+        return 0;
+    }
     uint32_t s = m->synced;
     uint32_t w = end - s;
-    if (w >= 16 || m->adc_busy || m->key_head < m->key_count || m->nmi_edge || m->irq_late) {
-        return 0;
-    }
-    if (fdc_ticks_to_event(&m->fdc) != 0xffffffffu) {
-        return 0;
-    }
-    uint32_t e = via_ticks_to_event(&m->sysvia);
-    uint32_t e2 = via_ticks_to_event(&m->usrvia);
-    if (e2 < e) {
-        e = e2;
-    }
-    uint32_t first_odd = s + 1 + ((s + 1) & 1 ? 0 : 1);
-    uint32_t via_abs = first_odd + 2 * (e - 1);
-    if ((int32_t)(via_abs - end) < 0) {
-        return 0;
-    }
-    if (end - m->crtc_synced >= crtc_ticks_to_check(&m->crtc)) {
-        return 0;
-    }
-    uint32_t k = ((s + w + 1) >> 1) - ((s + 1) >> 1);
-    if (k) {
-        via_advance(&m->sysvia, k);
-        via_advance(&m->usrvia, k);
-    }
+    uint32_t k = ((end + 1) >> 1) - ((s + 1) >> 1);
+    via_advance(&m->sysvia, k);
+    via_advance(&m->usrvia, k);
     m->synced = end;
+    if (w > 16) {
+        w = 16;
+    }
     *mask = machine_irq_level(m) ? ((1u << w) - 1) : 0;
     *n = w;
     STAT(m->stat_via_fast);
@@ -1118,9 +1111,11 @@ static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t 
             if (IO_LEVEL_MOVED()) {
                 IO_TICK();
             } else {
-                k++;
-                io_schedule_quiet(m);
+                k++;   // a read moves no timer event: the sync point stands
             }
+#ifdef MACHINE_STATS
+            m->stat_clk_quiet += MACHINE_CYCLES() - io0;
+#endif
             return IO_RESULT(v);
         }
     }
@@ -1163,6 +1158,9 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
                 k++;
                 io_schedule_quiet(m);
             }
+#ifdef MACHINE_STATS
+            m->stat_clk_quiet += MACHINE_CYCLES() - io0;
+#endif
             return IO_RESULT(0);
         }
     }

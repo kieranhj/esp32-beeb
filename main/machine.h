@@ -38,7 +38,7 @@ struct machine {
     uint32_t stat_sync_boundary, stat_sync_write, stat_sync_io;
     uint32_t stat_due_hist[17];
     uint32_t stat_due_src[8];
-    uint64_t stat_clk_advance, stat_clk_crtc, stat_clk_via, stat_clk_fdc, stat_clk_io, stat_clk_due;   // MACHINE_CYCLES()
+    uint64_t stat_clk_advance, stat_clk_crtc, stat_clk_via, stat_clk_fdc, stat_clk_io, stat_clk_due, stat_clk_quiet;   // MACHINE_CYCLES()
     uint64_t stat_clk_sheila[8];   // register handling alone, by (addr >> 4) & 7 within SHEILA
     uint32_t stat_io_page[8];
     uint32_t stat_io_ticks, stat_zero_calls;   // IO_TICK advance calls; calls with nothing to run
@@ -105,6 +105,7 @@ struct machine {
     // behind when no vsync change can fall in the window (machine.c).
     uint32_t crtc_synced;
     uint32_t win_due;    // the sync point the display write window was computed for
+    uint8_t quiet_ok;    // at the last full schedule: the 1770 and ADC idle (see io_quiet_window)
     uint32_t nmi_cycle;
 };
 

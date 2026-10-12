@@ -23,9 +23,14 @@ static void trace_line(struct cpu6502 *cpu, int kind);
 
 static int debug_irq;
 
+static unsigned long trace_from;
+
 static void trace_line(struct cpu6502 *cpu, int kind)
 {
     char f[9];
+    if (cpu->cyc < trace_from) {
+        return;
+    }
     if (kind && debug_irq) {
         struct machine *mm = cpu->m;
         fprintf(stderr, "%s at %lu pc=%04X: sysvia ifr=%02X ier=%02X  usrvia ifr=%02X ier=%02X\n",
@@ -96,6 +101,9 @@ int main(int argc, char **argv)
     }
     const char *dir = argv[1];
     debug_irq = getenv("TRACE_DEBUG") != NULL;
+    if (getenv("TRACE_FROM")) {
+        trace_from = strtoul(getenv("TRACE_FROM"), NULL, 10);
+    }
     uint64_t cycles = strtoull(argv[2], NULL, 10);
 
     struct machine *m = &machine;
@@ -122,6 +130,25 @@ int main(int argc, char **argv)
         }
     }
 
+    // TRACE_JSR="<cycle> <addr hex> <bytes hex>": at the first instruction
+    // boundary at or after <cycle>, write the bytes at <addr> and jump
+    // there; beebjit: "breakat <cycle>;c;writem <addr> <bytes...>;e pc=<addr>".
+    if (getenv("TRACE_JSR")) {
+        char buf[1024];
+        snprintf(buf, sizeof buf, "%s", getenv("TRACE_JSR"));
+        uint64_t at = strtoull(strtok(buf, " "), NULL, 10);
+        unsigned addr = (unsigned)strtoul(strtok(NULL, " "), NULL, 16);
+        const char *hex = strtok(NULL, " ");
+        while (m->cpu.cycles < at) {
+            uint64_t step = at - m->cpu.cycles;
+            machine_run(m, m->cpu.cycles + (step > 100000 ? 100000 : step));
+        }
+        for (unsigned i = 0; hex[2 * i] && hex[2 * i + 1]; i++) {
+            char b[3] = {hex[2 * i], hex[2 * i + 1], 0};
+            m->ram[(addr + i) & 0xffff] = (uint8_t)strtoul(b, NULL, 16);
+        }
+        m->cpu.pc = (uint16_t)addr;
+    }
     while (m->cpu.cycles < cycles) {
         machine_run(m, m->cpu.cycles + 100000);
     }
