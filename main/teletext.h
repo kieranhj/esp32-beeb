@@ -71,5 +71,12 @@ TT_API void teletext_vsync_changed(struct teletext *t, int value);
 // Renders 8 pixels to out, and to next_out (the following raster) if given.
 TT_API void teletext_render(struct teletext *t, int is_odd_tick, render_px *out, render_px *next_out);
 TT_API void teletext_render_pair(struct teletext *t, render_px *out, render_px *next_out, int want_next);
+// A run of character words (VS_PAIR, DISPEN and MA13 set, no events) from
+// the stream ring starting at index `tail`, at most `max` of them: each is
+// teletext_data then teletext_render_pair, with the state in locals. Stops
+// at the first word that is not such a pair; returns how many it took (0
+// if the DISPEN pipeline is not settled yet, for the caller's own path).
+TT_API uint32_t teletext_run(struct teletext *t, const uint16_t *ring, uint32_t mask, uint32_t tail,
+                             uint32_t max, render_px *out, render_px *next_out, int want_next);
 
 #endif

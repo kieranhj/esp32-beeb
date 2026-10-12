@@ -782,7 +782,34 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
 #undef RUN_2MHZ
 #undef RUN_1MHZ
         }
-        if (mode7 && !blank && pos == pos0) {
+        if (mode7 && !blank && pos == pos0 && !(all_slow & 24) && run_flags == (VS_DISPEN | VS_MA13)) {
+            // Teletext characters in bulk: the fused run with its state in
+            // locals. What it does not take (DISPEN pipeline still
+            // settling) goes through the per-word loop below.
+            while ((w & VS_PAIR) && pos <= RENDER_WIDTH - 16) {
+                uint32_t kmax = (uint32_t)(RENDER_WIDTH - pos) / 16;
+                if (kmax > (uint32_t)n) {
+                    kmax = (uint32_t)n;
+                }
+                uint32_t c = teletext_run(tt, vs->ring, VS_RING - 1, t, kmax, line + pos, line2 + pos, want2);
+                if (c == 0) {
+                    break;
+                }
+                pos += 16 * (int32_t)c;
+                horiz += 16 * (int32_t)c;
+                t += c;
+                n -= (int)c;
+                if (n <= 0 || pos > RENDER_WIDTH - 8) {
+                    break;
+                }
+                w = vs->ring[t & (VS_RING - 1)];
+                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) {
+                    break;
+                }
+            }
+        }
+        if (mode7 && !blank && n > 0 && pos <= RENDER_WIDTH - 8 && !(w & VS_EVENT) &&
+            (w & (VS_DISPEN | VS_MA13)) == run_flags) {
             // Teletext characters: the pipeline then both ticks' pixels,
             // one pair word per character (a lone tick goes below).
             while ((w & VS_PAIR) && pos <= RENDER_WIDTH - 16) {

@@ -451,6 +451,112 @@ TT_API void teletext_render_pair(struct teletext *t, render_px *out, render_px *
 #endif
 }
 
+// Sixteen pixels of one glyph row pair (both halves) for fg on bg.
+static inline RENDER_FN __attribute__((always_inline)) void glyph_row16(const uint8_t *row, render_px *out,
+                                                                       render_px fg, render_px bg)
+{
+#ifdef RENDER_INDEXED
+    uint32_t fgx = fg * 0x01010101u;
+    uint32_t x = (fg ^ bg) * 0x01010101u;   // bg = fgx ^ x: one and and one xor a word
+    uint32_t bgx = fgx ^ x;
+    uint32_t *o = (uint32_t *)out;
+    const uint32_t *m = s_expand[row[1]];
+    o[0] = bgx ^ (m[0] & x);
+    o[1] = bgx ^ (m[1] & x);
+    m = s_expand[row[0]];
+    o[2] = bgx ^ (m[0] & x);
+    o[3] = bgx ^ (m[1] & x);
+#else
+    glyph_half(row, 0, out, fg, bg);
+    glyph_half(row, 1, out + 8, fg, bg);
+#endif
+}
+
+TT_API uint32_t teletext_run(struct teletext *t, const uint16_t *ring, uint32_t mask, uint32_t tail,
+                             uint32_t max, render_px *out, render_px *next_out, int want_next)
+{
+    // Settled DISPEN pipeline only (two words after DISPEN rises): then no
+    // byte is forced, every byte decodes, the cell is not blank and the end
+    // of line cannot be detected inside the run.
+    if (t->dispen_pipe != 7) {
+        return 0;
+    }
+    const uint32_t want = VS_PAIR | VS_DISPEN | VS_MA13;
+    uint32_t dp = t->data_pipe;
+    const uint8_t *rc = t->render_character;
+    const uint8_t *held = t->held_character;
+    const uint8_t *active = t->active_characters;
+    render_px fg = t->fg_color, bg = t->bg_color;
+    int graphics = t->is_graphics_active;
+    // The prepare step's substitutions that stay fixed until a control code.
+    int blank_glyph = (t->flash_active && !t->flash_visible_this_frame) ||
+                      (t->second_character_row_of_double && !t->double_active) || t->is_concealed;
+    const uint32_t *off = t->row_off[t->double_active ? 1 : 0];
+    uint32_t off0 = off[0], off1 = off[1];
+    render_px rfg = t->render_fg_color;
+    uint32_t i = 0;
+    for (; i < max; i++) {
+        uint16_t w = ring[(tail + i) & mask];
+        if ((w & (VS_EVENT | VS_PAIR | VS_DISPEN | VS_MA13)) != want) {
+            break;
+        }
+        uint8_t q = (uint8_t)dp & 0x7f;   // the byte leaving the pipeline
+        dp = (dp >> 8) | ((uint32_t)(w >> 8) << 16);
+        if (q >= 0x20) {
+            const uint8_t *ch = active + GLYPH_STRIDE * (q - 0x20);
+            rc = ch;
+            if (graphics) {
+                if (q & 0x20) {
+                    held = ch;
+                }
+            } else {
+                held = s_glyphs;
+            }
+            rfg = fg;
+        } else {
+            // A control code: the general path, then the locals again.
+            t->data_pipe = dp;
+            t->render_character = rc;
+            t->held_character = held;
+            t->render_fg_color = rfg;
+            do_data_byte(t, q);
+            rc = t->render_character;
+            held = t->held_character;
+            active = t->active_characters;
+            fg = t->fg_color;
+            bg = t->bg_color;
+            rfg = t->render_fg_color;
+            graphics = t->is_graphics_active;
+            blank_glyph = (t->flash_active && !t->flash_visible_this_frame) ||
+                          (t->second_character_row_of_double && !t->double_active) || t->is_concealed;
+            off = t->row_off[t->double_active ? 1 : 0];
+            off0 = off[0];
+            off1 = off[1];
+        }
+        const uint8_t *src = blank_glyph ? s_glyphs : rc;
+        render_px *o = out + 16 * i;
+        glyph_row16(src + off0, o, rfg, bg);
+        if (want_next) {
+            glyph_row16(src + off1, next_out + 16 * i, rfg, bg);
+        }
+    }
+    if (i) {
+        // What teletext_data and teletext_render_pair leave behind.
+        t->data_pipe = dp;
+        t->render_character = rc;
+        t->held_character = held;
+        t->render_fg_color = rfg;
+        t->idle_calls = 0;
+        const uint8_t *src = blank_glyph ? s_glyphs : rc;
+        t->row_fg = rfg;
+        t->row_bg = bg;
+        t->row_blank = 0;
+        t->row_glyph = src + off0;
+        t->row_glyph2 = src + off1;
+    }
+    return i;
+}
+
 TT_API void teletext_render(struct teletext *t, int is_odd_tick, render_px *out, render_px *next_out)
 {
     if (!is_odd_tick) {
