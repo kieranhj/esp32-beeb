@@ -25,6 +25,7 @@
 // raster go through the cache; internal RAM is the scarce thing.
 #define TELETEXT_DATA_ATTR EXT_RAM_BSS_ATTR
 #define RENDER_EMIT(r, first, count, vert) video_emit(r, first, count, vert)
+#define RENDER_PALETTE_HOOK(r) video_palette(r)
 #define RENDER_FRAME_HOOK(r) video_frame_done()
 #define RENDER_CYCLES() esp_cpu_get_cycle_count()
 #define RENDER_LINE2_WANTED(r) video_line2_wanted(r)
@@ -32,6 +33,7 @@ struct render;
 static int video_line2_wanted(const struct render *r);
 struct render;
 static void video_emit(struct render *r, uint32_t first, uint32_t count, int32_t vert);
+static void video_palette(const struct render *r);
 static void video_frame_done(void);
 #include "render.c"
 #include "teletext.c"
@@ -70,7 +72,8 @@ static struct vstream *s_vs;
 static uint16_t s_src_x[DISPLAY_W];
 static uint16_t s_dst_from_src[RENDER_WIDTH + 1];
 // The 8 physical colours as panel pixels, indexed by the ULA's BGR bits.
-static uint16_t s_rgb[8];
+static uint16_t s_rgb3[8];          // the 3-bit physical colours as RGB565
+static uint16_t s_rgb[PX_CODES];    // every colour code under the current palette
 
 // The band being filled, where it is on the panel, and which of its rows
 // have been written (the rest are cleared when it is sent).
@@ -93,7 +96,7 @@ static void build_tables(void)
         s_dst_from_src[x] = (uint16_t)d;
     }
     for (int i = 0; i < 8; i++) {
-        s_rgb[i] = display_rgb565((i & 1) ? 255 : 0, (i & 2) ? 255 : 0, (i & 4) ? 255 : 0);
+        s_rgb3[i] = display_rgb565((i & 1) ? 255 : 0, (i & 2) ? 255 : 0, (i & 4) ? 255 : 0);
     }
 }
 
@@ -149,21 +152,22 @@ static RENDER_FN int video_line2_wanted(const struct render *r)
     return (((s + 1) * 21) >> 4) - ((s * 21) >> 4) == 2;
 }
 
-static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t count, int y)
+// The palette changed (or the flash state): the renderer has emitted what
+// was rendered under the old one. Resolve every colour code again.
+static RENDER_FN void video_palette(const struct render *r)
 {
-    if (video_test_mode == 1) {
-        return;
+    for (int code = 0; code < PX_CODES; code++) {
+        s_rgb[code] = s_rgb3[px_resolve((render_px)code, r->logical_to_physical, r->is_flash)];
     }
-    seek_band(y / DISPLAY_BAND_ROWS);
-    uint32_t c0 = esp_cpu_get_cycle_count();
-    s_rows++;
+}
+
+// Panel row y's buffer, cleared outside [i0, i1) on its first touch this
+// frame (whatever a span leaves is black).
+static inline RENDER_FN uint16_t *row_dst(int y, uint32_t i0, uint32_t i1)
+{
     int row = y - s_band * DISPLAY_BAND_ROWS;
     uint16_t *dst = s_buf + row * DISPLAY_W;
-    s_last_row = dst;
-    uint32_t i0 = s_dst_from_src[first];
-    uint32_t i1 = s_dst_from_src[first + count];
     if (!(s_rows_written & (1u << row))) {
-        // First touch this frame: whatever the span leaves is black.
         s_rows_written |= 1u << row;
         if (i0 > 0) {
             memset(dst, 0, i0 * sizeof(uint16_t));
@@ -172,6 +176,17 @@ static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t co
             memset(dst + i1, 0, (DISPLAY_W - i1) * sizeof(uint16_t));
         }
     }
+    return dst;
+}
+
+static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t count, int y, uint32_t i0, uint32_t i1)
+{
+    (void)count;
+    seek_band(y / DISPLAY_BAND_ROWS);
+    uint32_t c0 = esp_cpu_get_cycle_count();
+    s_rows++;
+    uint16_t *dst = row_dst(y, i0, i1);
+    s_last_row = dst;
     // 7 panel pixels per 10 picture pixels: source offsets 0 1 2 4 5 7 8
     // within each 10, two groups per iteration so stores are whole words.
     uint32_t g0 = (i0 + 13) / 14, g1 = i1 / 14;
@@ -200,27 +215,28 @@ static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t coun
 {
     int32_t cy = (vert & ~1) - r->vert_window_start;
     int32_t raster = cy - PIC_Y0;
-    if (raster < 0 || raster >= PIC_RASTERS || count == 0) {
+    if (raster < 0 || raster >= PIC_RASTERS || count == 0 || video_test_mode == 1) {
         return;
     }
     // Scanline s covers panel rows [s*21/16, (s+1)*21/16): one or two.
     int s = raster >> 1;
     int row0 = PIC_TOP + ((s * 21) >> 4);
     int row1 = PIC_TOP + (((s + 1) * 21) >> 4);
-    write_row(r->line, first, count, row0);
+    uint32_t i0 = s_dst_from_src[first];
+    uint32_t i1 = s_dst_from_src[first + count];
+    write_row(r->line, first, count, row0, i0, i1);
     if (row1 - row0 == 2) {
-        if (r->mode != RENDER_MODE7 && video_test_mode != 1 && (row0 + 1) / DISPLAY_BAND_ROWS == s_band) {
-            // Same raster twice: copy the scaled row (teletext's second
+        if (r->mode != RENDER_MODE7 && (row0 + 1) / DISPLAY_BAND_ROWS == s_band) {
+            // Same raster twice: copy the scaled span (teletext's second
             // raster differs, so it is scaled).
             const uint16_t *src = s_last_row;
             uint32_t c0 = esp_cpu_get_cycle_count();
             s_rows++;
-            int row = row0 + 1 - s_band * DISPLAY_BAND_ROWS;
-            s_rows_written |= 1u << row;
-            memcpy(s_buf + row * DISPLAY_W, src, DISPLAY_W * sizeof(uint16_t));
+            uint16_t *dst = row_dst(row0 + 1, i0, i1);
+            memcpy(dst + i0, src + i0, (i1 - i0) * sizeof(uint16_t));
             s_clk_rows += esp_cpu_get_cycle_count() - c0;
         } else {
-            write_row(r->line2, first, count, row0 + 1);
+            write_row(r->line2, first, count, row0 + 1, i0, i1);
         }
     }
 }

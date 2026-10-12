@@ -45,8 +45,16 @@
 #define RENDER_EMIT_CANVAS 1
 #endif
 
+// Called when the palette or the flash state changes, after the span
+// rendered under the old one has been emitted (RENDER_INDEXED: the
+// emitter resolves colour codes and keeps its own lookup).
+#ifndef RENDER_PALETTE_HOOK
+#define RENDER_PALETTE_HOOK(r) ((void)0)
+#endif
+
 #ifdef RENDER_EMIT_CANVAS
 // Copies line[first..first+count) to canvas rows vert&~1 and the next.
+// With colour codes, the canvas gets the resolved 3-bit physical colour.
 static void render_emit_canvas(struct render *r, uint32_t first, uint32_t count, int32_t vert)
 {
     if (!r->buffer || count == 0) {
@@ -57,10 +65,26 @@ static void render_emit_canvas(struct render *r, uint32_t first, uint32_t count,
         return;
     }
     render_px *row = r->buffer + (v - r->vert_window_start) * RENDER_WIDTH;
+#ifdef RENDER_INDEXED
+    for (uint32_t i = first; i < first + count; i++) {
+        row[i] = px_resolve(r->line[i], r->logical_to_physical, r->is_flash);
+        row[RENDER_WIDTH + i] = px_resolve(r->line2[i], r->logical_to_physical, r->is_flash);
+    }
+#else
     memcpy(row + first, r->line + first, count * sizeof(render_px));
     memcpy(row + RENDER_WIDTH + first, r->line2 + first, count * sizeof(render_px));
+#endif
 }
 #endif
+
+// Emits what this raster rendered so far; the next pixels start a new span.
+static inline RENDER_FN void end_span(struct render *r)
+{
+    if (r->span_end > r->span_start) {
+        RENDER_EMIT(r, r->span_start, r->span_end - r->span_start, r->vert_beam_pos);
+        r->span_start = r->span_end;
+    }
+}
 
 // Emits what this raster rendered so far and starts a fresh span.
 static inline RENDER_FN void flush_line(struct render *r)
@@ -136,6 +160,7 @@ void render_reset(struct render *r)
     r->chars_per_line = 0;
     r->is_teletext = 1;
     r->needs_mode_recalc = 1;
+    RENDER_PALETTE_HOOK(r);
 }
 
 static render_px display_color(struct render *r, uint8_t bits)
@@ -151,11 +176,17 @@ static render_px display_color(struct render *r, uint8_t bits)
     return r->palette[physical];
 }
 
-// The 16 logical colours as pixels, with the flash bit resolved.
+// The 16 logical colours as pixels: with the flash bit resolved on the
+// host, as codes the emitter resolves on the board.
 static RENDER_FN void physical_palette(struct render *r, render_px phys[16])
 {
     for (int i = 0; i < 16; i++) {
+#ifdef RENDER_INDEXED
+        phys[i] = PX_LOGICAL(i);
+        (void)r;
+#else
         phys[i] = display_color(r, (uint8_t)i);
+#endif
     }
 }
 
@@ -187,27 +218,12 @@ static RENDER_FN uint16_t fill_entry(render_px *out, uint32_t width, uint32_t i,
     return used;
 }
 
-// The logical index of each of the byte's num_pixels pixels (at most 8;
-// more are not packed), four bits each, pixel 0 in the low nibble.
-static RENDER_FN uint32_t packed_indices(uint32_t i, uint32_t num_pixels)
-{
-    uint32_t packed = 0;
-    uint8_t sr = (uint8_t)i;
-    uint32_t n = num_pixels > 8 ? 8 : num_pixels;
-    for (uint32_t k = 0; k < n; k++) {
-        packed |= (uint32_t)byte_pixel_index(sr) << (4 * k);
-        sr = (uint8_t)((sr << 1) | 1);
-    }
-    return packed;
-}
-
 static RENDER_FN void generate_1mhz(struct render *r, render_px (*table)[16], uint32_t num_pixels)
 {
     render_px phys[16];
     physical_palette(r, phys);
     for (uint32_t i = 0; i < 256; i++) {
         r->byte_logicals[1][i] = fill_entry(table[i], 16, i, num_pixels, phys);
-        r->packed_idx[1][i] = packed_indices(i, num_pixels);
     }
 }
 
@@ -217,147 +233,37 @@ static RENDER_FN void generate_2mhz(struct render *r, render_px (*table)[8], uin
     physical_palette(r, phys);
     for (uint32_t i = 0; i < 256; i++) {
         r->byte_logicals[0][i] = fill_entry(table[i], 8, i, num_pixels, phys);
-        r->packed_idx[0][i] = packed_indices(i, num_pixels);
     }
 }
-
-#ifdef RENDER_INDEXED
-// Rebuilds the entries of one table whose pixels use a colour in `bit`,
-// from their packed logical indices, a word (four pixels) at a time:
-// phys4 holds each physical colour in all four lanes, phys2 in two. The
-// stride (output pixels per source pixel) is decided once, outside the
-// loop: a demo rewriting the whole palette every scanline rebuilds all
-// 256 entries each time.
-static RENDER_FN void rebuild_table_lanes(uint32_t *tab, uint32_t words, const uint32_t *packed,
-                                          const uint16_t *logicals, uint16_t bit, uint32_t num_pixels,
-                                          const uint32_t phys4[16], const uint32_t phys2[16],
-                                          const render_px phys[16])
-{
-    uint32_t stride = (words * 4) / num_pixels;
-    switch (stride) {
-    case 1:   // four distinct pixels a word (MODE 0)
-        for (uint32_t i = 0; i < 256; i++) {
-            if (logicals[i] & bit) {
-                uint32_t *out = tab + i * words;
-                for (uint32_t w = 0; w < words; w++) {
-                    uint32_t p = packed[i] >> (16 * w);
-                    out[w] = phys[p & 15] | ((uint32_t)phys[(p >> 4) & 15] << 8) |
-                             ((uint32_t)phys[(p >> 8) & 15] << 16) | ((uint32_t)phys[(p >> 12) & 15] << 24);
-                }
-            }
-        }
-        break;
-    case 2:   // two source pixels a word (MODE 1; MODE 4)
-        for (uint32_t i = 0; i < 256; i++) {
-            if (logicals[i] & bit) {
-                uint32_t *out = tab + i * words;
-                for (uint32_t w = 0; w < words; w++) {
-                    uint32_t p = packed[i] >> (8 * w);
-                    out[w] = phys2[p & 15] | (phys2[(p >> 4) & 15] << 16);
-                }
-            }
-        }
-        break;
-    case 4:   // one source pixel a word (MODE 2; MODE 5)
-        for (uint32_t i = 0; i < 256; i++) {
-            if (logicals[i] & bit) {
-                uint32_t *out = tab + i * words;
-                uint32_t p = packed[i];
-                for (uint32_t w = 0; w < words; w++) {
-                    out[w] = phys4[(p >> (4 * w)) & 15];
-                }
-            }
-        }
-        break;
-    case 8:   // one source pixel per two words
-        for (uint32_t i = 0; i < 256; i++) {
-            if (logicals[i] & bit) {
-                uint32_t *out = tab + i * words;
-                uint32_t p = packed[i];
-                for (uint32_t w = 0; w < words; w++) {
-                    out[w] = phys4[(p >> (2 * w)) & 15];
-                }
-            }
-        }
-        break;
-    default:  // one source pixel for the whole entry
-        for (uint32_t i = 0; i < 256; i++) {
-            if (logicals[i] & bit) {
-                uint32_t *out = tab + i * words;
-                uint32_t v = phys4[packed[i] & 15];
-                for (uint32_t w = 0; w < words; w++) {
-                    out[w] = v;
-                }
-            }
-        }
-        break;
-    }
-}
-#endif
 
 // Palette writes are applied to the tables lazily, before the next pixel
 // is rendered: only the entries whose pixels use a changed logical colour
-// are rebuilt, and several writes on one scanline cost one pass. A demo
-// writing the palette every scanline would otherwise rebuild everything
-// at every write.
+// are rebuilt, and several writes on one scanline cost one pass. (Host
+// only: on the board the tables hold logical codes and never change for
+// the palette.)
 static RENDER_FN void palette_fixup(struct render *r)
 {
     uint16_t bit = r->palette_dirty;
     r->palette_dirty = 0;
     render_px phys[16];
     physical_palette(r, phys);
-#ifdef RENDER_INDEXED
-    uint32_t phys4[16], phys2[16];
-    for (int i = 0; i < 16; i++) {
-        phys4[i] = phys[i] * 0x01010101u;
-        phys2[i] = phys[i] * 0x0101u;
-    }
-#endif
-    // Only the table of the current clock is fixed up; the other is
-    // marked unbuilt and regenerated in full when a mode switch next needs
-    // it, instead of being rebuilt at every palette write meanwhile.
-    int fast = r->mode == RENDER_MODE0 || r->mode == RENDER_MODE1 || r->mode == RENDER_MODE2 ||
-               r->mode == RENDER_MODE2_10;
-    if (fast) {
-        r->tables_built &= ~2u;
-    } else {
-        r->tables_built &= ~1u;
-    }
     if (r->tables_built & 1) {
         int mode = r->table_mode[0];
         uint32_t n = mode == RENDER_MODE0 ? 8 : mode == RENDER_MODE1 ? 4 : mode == RENDER_MODE2 ? 2 : 1;
-#ifdef RENDER_INDEXED
-        rebuild_table_lanes((uint32_t *)r->table_2mhz, 2, r->packed_idx[0], r->byte_logicals[0], bit, n,
-                            phys4, phys2, phys);
-#else
         for (uint32_t i = 0; i < 256; i++) {
             if (r->byte_logicals[0][i] & bit) {
                 fill_entry(r->table_2mhz[i], 8, i, n, phys);
             }
         }
-#endif
     }
     if (r->tables_built & 2) {
         int mode = r->table_mode[1];
         uint32_t n = mode == RENDER_MODE4_80 ? 16 : mode == RENDER_MODE4 ? 8 : mode == RENDER_MODE5 ? 4 : 2;
-#ifdef RENDER_INDEXED
-        if (n == 16) {
-            for (uint32_t i = 0; i < 256; i++) {   // 16 pixels a byte: no packing
-                if (r->byte_logicals[1][i] & bit) {
-                    fill_entry(r->table_1mhz[i], 16, i, n, phys);
-                }
-            }
-        } else {
-            rebuild_table_lanes((uint32_t *)r->table_1mhz, 4, r->packed_idx[1], r->byte_logicals[1], bit, n,
-                                phys4, phys2, phys);
-        }
-#else
         for (uint32_t i = 0; i < 256; i++) {
             if (r->byte_logicals[1][i] & bit) {
                 fill_entry(r->table_1mhz[i], 16, i, n, phys);
             }
         }
-#endif
     }
 }
 
@@ -449,6 +355,11 @@ static RENDER_FN void set_flash(struct render *r, int is_flash)
     if (r->is_flash == is_flash) {
         return;
     }
+#ifdef RENDER_INDEXED
+    end_span(r);
+    r->is_flash = is_flash;
+    RENDER_PALETTE_HOOK(r);
+#else
     for (int i = 0; i < 16; i++) {
         if (r->logical_to_physical[i] & 8) {
             r->tables_built = 0;
@@ -456,6 +367,7 @@ static RENDER_FN void set_flash(struct render *r, int is_flash)
         }
     }
     r->is_flash = is_flash;
+#endif
 }
 
 static inline RENDER_FN void check_cursor(struct render *r, render_px *pos, render_px *next, int advance)
@@ -603,8 +515,14 @@ RENDER_FN void render_word(struct render *r, uint16_t w)
         break;
     case VS_ULAPAL:
         r->stat_ulapal++;
+#ifdef RENDER_INDEXED
+        end_span(r);   // what is rendered keeps the old palette
+        r->logical_to_physical[payload >> 4] = payload & 0x0f;
+        RENDER_PALETTE_HOOK(r);
+#else
         r->logical_to_physical[payload >> 4] = payload & 0x0f;
         r->palette_dirty |= (uint16_t)(1u << (payload >> 4));
+#endif
         break;
     case VS_FRAMING:
         r->framing_changed = 1;
@@ -616,10 +534,7 @@ RENDER_FN void render_word(struct render *r, uint16_t w)
 
 void render_flush(struct render *r)
 {
-    if (r->span_end > r->span_start) {
-        RENDER_EMIT(r, r->span_start, r->span_end - r->span_start, r->vert_beam_pos);
-        r->span_start = r->span_end;
-    }
+    end_span(r);
 }
 
 // The per-word path above costs a few hundred clocks on the board; most

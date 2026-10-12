@@ -241,7 +241,7 @@ void teletext_init(struct teletext *t)
     memset(t, 0, sizeof *t);
     for (uint32_t i = 0; i < 8; i++) {
 #ifdef RENDER_INDEXED
-        t->palette[i] = (render_px)i;
+        t->palette[i] = PX_PHYS(i);   // teletext colours are physical (see pixel.h)
 #else
         // One unit per channel so PX_BLEND's multiply is per channel.
         uint32_t c = 0;
@@ -413,9 +413,9 @@ TT_API void teletext_render_pair(struct teletext *t, render_px *out, render_px *
     uint32_t *o = (uint32_t *)out;
     uint32_t *o2 = (uint32_t *)next_out;
     if (t->row_blank) {
-        o[0] = o[1] = o[2] = o[3] = 0;
+        o[0] = o[1] = o[2] = o[3] = PX_BLACK * 0x01010101u;
         if (want_next) {
-            o2[0] = o2[1] = o2[2] = o2[3] = 0;
+            o2[0] = o2[1] = o2[2] = o2[3] = PX_BLACK * 0x01010101u;
         }
         return;
     }
@@ -454,9 +454,9 @@ TT_API void teletext_render(struct teletext *t, int is_odd_tick, render_px *out,
     }
     if (t->row_blank) {
 #ifdef RENDER_INDEXED
-        ((uint32_t *)out)[0] = ((uint32_t *)out)[1] = 0;
+        ((uint32_t *)out)[0] = ((uint32_t *)out)[1] = PX_BLACK * 0x01010101u;
         if (next_out) {
-            ((uint32_t *)next_out)[0] = ((uint32_t *)next_out)[1] = 0;
+            ((uint32_t *)next_out)[0] = ((uint32_t *)next_out)[1] = PX_BLACK * 0x01010101u;
         }
 #else
         for (int i = 0; i < 8; i++) {
