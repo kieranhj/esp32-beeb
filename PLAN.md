@@ -146,10 +146,14 @@ instruction, then sound.
 - [x] Core 0 on a bitmap demo with per-scanline palette writes: 99% to
       80% (colour codes resolved at emit, the run loop specialised, three
       band buffers, the machine waits for ring room instead of lapping).
-- [ ] Mode 7 saturates core 0 (155 clocks a character word rendering,
-      229 with the panel path; a full screen is a million words a second).
-      Levers: a nibble lookup glyph expander, a character-row renderer,
-      the scaler's two-pixel lookup.
+- [ ] Mode 7 leaves core 0 no headroom: 93 to 98% on every teletext
+      screen tried (mmode7, beebstep, teletextr, the demos' loaders), at
+      50 fps since the sound renderer went eight steps at a time. The mode
+      7 loop costs about 80 clocks a character word even with the pipeline
+      and pixels switched off (boot bench "neither"), events 281 each; the
+      inlined teletext pipeline stores a dozen fields per byte. Levers: a
+      character-row renderer, the pipeline's state kept in registers for a
+      run, the scaler's two-pixel lookup.
 - [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
       a continuation write (0x3C) would halve the transactions per band.
       The scaler is 14%; a two-pixel lookup would help.
