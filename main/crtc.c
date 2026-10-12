@@ -174,6 +174,43 @@ CRTC_INLINE uint8_t crtc_rendering_tick(struct crtc *c, uint8_t horiz_counter,
     return data;
 }
 
+// One step of the start-of-line chain: beebjit's four-tick latch sequence
+// after the R0 hit, which decides vertical adjust and the end of frame
+// from the hits latched at the line start. It runs on counting ticks
+// (every tick at 2 MHz, the odd ticks at 1 MHz).
+CRTC_INLINE uint8_t crtc_chain_step(struct crtc *c, uint8_t checks)
+{
+    if (checks & 8) {
+        if (c->is_end_of_vert_adjust_latched) {
+            c->is_end_of_frame_latched = 1;
+        }
+        checks &= ~8;
+    }
+    if (checks & 4) {
+        if (c->is_end_of_main_latched) {
+            if (c->r5_hit) {
+                c->is_end_of_vert_adjust_latched = 1;
+            } else if (!c->is_in_vert_adjust && !c->in_dummy_raster) {
+                c->is_vert_adjust_pending = 1;
+            }
+        }
+        checks &= ~4;
+        checks |= 8;
+    }
+    if (checks & 2) {
+        if (c->r4_hit && c->r9_hit) {
+            c->is_end_of_main_latched = 1;
+        }
+        checks &= ~2;
+        checks |= 4;
+    }
+    if (checks & 1) {
+        checks &= ~1;
+        checks |= 2;
+    }
+    return checks;
+}
+
 // One 2 MHz system tick. `tick` is the index of the tick being processed.
 CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
 {
@@ -194,34 +231,7 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
 
     uint8_t checks = c->start_of_line_state_checks;
     if (checks) {
-        if (checks & 8) {
-            if (c->is_end_of_vert_adjust_latched) {
-                c->is_end_of_frame_latched = 1;
-            }
-            checks &= ~8;
-        }
-        if (checks & 4) {
-            if (c->is_end_of_main_latched) {
-                if (c->r5_hit) {
-                    c->is_end_of_vert_adjust_latched = 1;
-                } else if (!c->is_in_vert_adjust && !c->in_dummy_raster) {
-                    c->is_vert_adjust_pending = 1;
-                }
-            }
-            checks &= ~4;
-            checks |= 8;
-        }
-        if (checks & 2) {
-            if (c->r4_hit && c->r9_hit) {
-                c->is_end_of_main_latched = 1;
-            }
-            checks &= ~2;
-            checks |= 4;
-        }
-        if (checks & 1) {
-            checks &= ~1;
-            checks |= 2;
-        }
+        checks = crtc_chain_step(c, checks);
     }
 
     horiz_counter++;  // wraps at 256
@@ -322,9 +332,6 @@ CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c)
             t = to_half;
         }
     }
-    if (c->start_of_line_state_checks) {
-        t = 1;  // the start-of-line chain is running
-    }
     // 1 MHz mode: counters step every other system tick.
     if (!c->ula_clock_fast) {
         t *= 2;
@@ -338,8 +345,9 @@ CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c)
 // means the next tick must take the exact path.
 CRTC_INLINE uint32_t crtc_fast_ticks(const struct crtc *c, uint32_t tick)
 {
-    // (An hsync in progress is only a countdown: the fast path does it.)
-    if (c->start_of_line_state_checks || c->cursor_skew_counter >= 0) {
+    // (An hsync in progress and the start-of-line chain are bookkeeping
+    // the fast path does itself.)
+    if (c->cursor_skew_counter >= 0) {
         return 0;
     }
     uint8_t dispen = (c->display_enable_bits == DISPEN_ALL);
@@ -434,6 +442,18 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
     uint8_t ma13 = c->data_ma13;
     uint8_t hc = c->horiz_counter;
     uint32_t i = 0;
+    if (c->start_of_line_state_checks) {
+        // The chain's inputs are latched at the line start and only a
+        // register write changes them, which syncs the machine first and
+        // so ends the run: step it once per counting tick.
+        uint32_t counting = c->ula_clock_fast ? n : ((tick & 1) ? (n + 1) / 2 : n / 2);
+        uint8_t checks = c->start_of_line_state_checks;
+        while (checks && counting) {
+            checks = crtc_chain_step(c, checks);
+            counting--;
+        }
+        c->start_of_line_state_checks = checks;
+    }
     if (c->in_hsync) {
         // The hsync counter steps once per fetch tick (every tick at 2 MHz,
         // the even ticks at 1 MHz). A new hsync can only start at an R2

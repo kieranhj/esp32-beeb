@@ -96,6 +96,7 @@ struct machine {
     // its state, so the machine cannot poke it directly): the cycle it
     // happened on. Delivered by the catch-up hooks like the IRQ line.
     uint8_t nmi_edge;
+    uint8_t irq_late;    // a key event moved the IRQ level after its cycle was recorded
     uint32_t nmi_cycle;
 };
 

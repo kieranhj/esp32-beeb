@@ -585,7 +585,11 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
         // wakeup timer does relative to the interrupt poll of that cycle.
         while (m->key_head < m->key_count && m->key_events[m->key_head].cycle == m->synced) {
             struct machine_key_event *e = &m->key_events[m->key_head++];
+            uint8_t before = machine_irq_level(m);
             machine_set_key(m, e->row, e->col, e->down);
+            if (machine_irq_level(m) != before) {
+                m->irq_late = 1;   // the core carries the old level: bring it back next cycle
+            }
         }
     }
     // When must the core come back? The earliest VIA event, ADC completion
@@ -631,6 +635,11 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
                 due = s + e;
                 src = 5;
             }
+        }
+        if (m->irq_late) {
+            m->irq_late = 0;
+            due = s + 1;   // (every other term is at least this)
+            src = 3;
         }
         if (m->nmi_edge) {
             due = s;   // the core must take the edge at its next boundary
