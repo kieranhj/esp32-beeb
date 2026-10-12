@@ -10,33 +10,34 @@ left to do, in order. Tick items off and delete phases as they finish.
 
 ## Status
 
-Phase 0 is done: the measured cost is 12 to 17 host clocks per emulated cycle
-for the CPU alone and 35 to 41 with a video-shaped per-cycle step, against a
-budget of 120 (see `docs/decisions.md`, "Phase 0 results"). The cycle-stepped
-design stands. `main/cpu6502.c` is a 65C12 (with an NMOS mode) with exact
-bus sequencing that passes the Klaus Dormann tests on the host and the board.
-`main/machine.c`
-is the Master: paging, VIAs, 1 MHz stretch, CMOS, ACIA/ADC/serial stubs,
-the 6845 in `main/crtc.c` and the video stream it emits; `main/render.c`
-and `main/teletext.c` turn the stream into pixels. On the host the
-instruction trace matches beebjit cycle for cycle through 10 M cycles of
-boot and through typed MODE changes, and ten frame comparisons (mode 7 boot,
-MODE 0 to 6, line drawing, VDU 19) are pixel identical. Discs load: the 1770 and the drives are beebjit's model restated, and
-an autobooted CRTC test disc traces identical to beebjit for 6 M cycles and
-renders identically 12 M cycles in, for all five test discs. On the board the
-picture is on the panel: the machine on core 1 paced to real time, the
-renderer and scaler on core 0. One disc is embedded per build
-(`idf.py "-DBEEB_DISC=x.ssd" build`) and autoboots. Of seven demos tried,
-two run in real time (crtc-tmoyos at 102 clocks per cycle, wave-runner at
-92), the rest are 15 to 50% over on core 1 (Twisted Brain 180, the VIA
-pollers sotc and mott 139), and any mode 7 screen saturates core 0 (229
-clocks a character word); see decisions "seven demos on the board". No
-tearing: the machine waits for ring room. The panel orientation (mirror bits, V2 gap axis)
-has not been seen by a person yet: boot it and read the mode 7 banner, then
-fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
-`main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
-Next: the mode 7 renderer (core 0's limit), the core's cost per I/O
-instruction, then sound.
+The emulator plays the demos on the board. `main/cpu6502.c` is a 65C12
+(NMOS mode too) with exact bus sequencing; `main/machine.c` is the Master
+(paging, VIAs, 1 MHz stretch, CMOS, 1770 and drives, the 6845 in
+`main/crtc.c`, the SN76489 in `main/sn76489.c`); `main/render.c` and
+`main/teletext.c` turn the video stream into pixels. On the host it traces
+identical to beebjit for 6 M cycles of disc boot and 2 M without, and 16
+frame cases (MODE 0 to 7, palette, teletext, five CRTC test discs) are
+pixel identical. On the board: core 1 runs the machine paced to real time,
+core 0 renders, scales into rotated bands for the panel, renders sound and
+polls touch and PWR. All 44 discs are in a flash bundle, chosen with
+`tools/beeb.py COM3 boot x.ssd` or by swiping. Kieran has seen the picture
+right way up and heard the sound.
+
+Where it stands against the budget (core 1, 120 clocks per emulated cycle;
+core 0 load), from the STATS line:
+
+| disc | core 1 | core 0 |
+|---|---|---|
+| crtc-tmoyos | about 100 | 52-65% |
+| bs-wave-runner | 92 | 70% |
+| mmode7, bs-bar-beeb (teletext) | 75-79 | 79-80% |
+| bs-beebstep, bs-teletextr | 117-121 | 83-86% |
+| bs-twisted | about 125 | 53-95% |
+| bs-sotc, bs-mott (VIA pollers) | about 139 | 55% |
+
+Next: core 1's cost per I/O instruction (the heavy demos are 5 to 15%
+over), then the SN76489 write cycle, then frame cases for the rest of
+`discs/`.
 
 ## The budget
 
@@ -116,15 +117,16 @@ instruction, then sound.
 ## Phase 3: presentation
 
 - [x] Panel bring-up (`main/display.c`): CO5300 over QSPI at 80 MHz, V2
-      detection by probing the touch controller, 16-row bands from two DMA
+      detection by probing the touch controller, 16-row bands from three DMA
       buffers in internal SRAM. The esp_lcd panel io was dropped: it polls
       every command and drains the DMA queue first, so a band could not be
       queued behind the one in flight. The SPI master driver is used
       directly and a band is two queued transactions.
-- [x] Rotation: the panel's own row/column exchange (MADCTL), so bands are
-      landscape rows and no transpose is needed. Mirror bits and the V2 gap
-      axis are defines in `display.h` and `display.c`; they have not been
-      seen on the panel yet (see Status).
+- [x] Rotation: the CO5300 ignores MADCTL's row/column exchange (rows sent
+      448 wide wrapped onto its 368 pixel native rows), so the panel runs
+      natively and the scaler writes each band rotated: 16 landscape rows
+      are 16 native columns by 448 rows (`display.h`). Seen right way up
+      by Kieran.
 - [x] Scaler (`main/video_esp.c`): 640 to 448 keeps 7 pixels in 10, 256
       scanlines to 336 rows doubles 5 in 16 (teletext's second raster
       supplies the doubled row), straight from the renderer's raster line
@@ -155,13 +157,15 @@ instruction, then sound.
 - [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
       a continuation write (0x3C) would halve the transactions per band.
       The scaler is 14%; a two-pixel lookup would help.
-- [ ] Core 1: an I/O instruction costs the core about 200 clocks before
-      the machine does anything (sotc's VIA polling loop: 100 clocks a
-      cycle of core alone); ordinary code about 45 a cycle. The I/O path
-      through the core has not been looked at since Phase 1. Twisted
-      Brain (180) is CRTC and ULA writes every scanline, each a full
-      catch-up by necessity; its remaining fat is the catch-up's fixed
-      cost (prologue and schedule, about 300 clocks each).
+- [ ] Core 1 on the heavy demos: bs-twisted about 125 clocks per cycle,
+      the VIA pollers bs-sotc and bs-mott about 139, bs-beebstep and
+      bs-teletextr 117-121 while loading. An I/O instruction costs the
+      core about 200 clocks before the machine does anything (sotc's
+      two-instruction `LDA &FE4D : BPL` loop: about 100 clocks a cycle of
+      core alone, against about 45 on ordinary code); the I/O path through
+      the core has not been looked at since Phase 1. Twisted Brain's CRTC
+      and ULA writes every scanline are full catch-ups by necessity; its
+      remaining fat is the catch-up's fixed cost (prologue and schedule).
 
 ## Phase 4: disc and sound
 

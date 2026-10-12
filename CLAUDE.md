@@ -9,12 +9,18 @@ is only what is left, decisions.md is why, this file is how.
 A cycle-stepped BBC Master 128 emulator written for the ESP32-S3 inside the
 Waveshare ESP32-S3-Touch-AMOLED-1.8, to play the bitshifters demos in `discs/`
 on its 368x448 AMOLED. Accuracy of CRTC/ULA tricks is the goal. It is not a
-port: beebjit is the reference and test oracle, not the engine. Phase 0
-(measure host clocks per emulated cycle on the real board) is done and the
-numbers are in `docs/decisions.md`; the cycle-stepped design stands. What
-exists: `main/cpu6502.c`, a 65C12 (the Master's CPU; NMOS mode too) with
-exact bus sequencing, and `main/main.c`, which is still the Phase 0
-benchmark harness. Phase 1 is under way.
+port: beebjit is the reference and test oracle, not the engine. It works:
+the demos boot from a flash bundle and play with picture, sound and touch.
+What is left is speed on the heaviest demos and the items in `PLAN.md`.
+
+Layout: `main/cpu6502.c` (65C12 core), `main/machine.c` (the Master; it
+includes `via.c`, `crtc.c`, `disc.c`, `fdc.c` and `cpu6502.c` into one
+translation unit), `main/render.c` + `main/teletext.c` (stream to pixels,
+beebjit's beam model), `main/sn76489.c` (sound chip). Board-only:
+`main/main.c` (tasks, pacing loop, STATS), `machine_esp.c` (placement),
+`video_esp.c` (render task, scaler, band handling), `display.c` (CO5300),
+`sound_esp.c` (ES8311), `input.c` (touch, PWR), `console.c` (serial
+commands), `bundle.c` (disc partition). Host harnesses in `host/`.
 
 The user is Kieran, a bitshifters member who wrote several of these demos and
 built the beebjit and b2 libretro cores in `../rg40xxv`. Assume deep BBC Micro
@@ -161,9 +167,9 @@ defined. Keep that shape: one translation unit per machine.
 effect until it is also made in `sdkconfig` (or `sdkconfig` is deleted and
 regenerated).
 
-Measuring: `main/main.c` prints `RESULT ... clk/cyc` for four profile masks
-(`machine_profile_skip`: bit 0 no CRTC, bit 1 no VIAs, bit 2 no catch-up)
-and `STATS` counters when built with `MACHINE_STATS`. `host/bench.exe
+Measuring: `machine_profile_skip` (bit 0 no CRTC, bit 1 no VIAs, bit 2 no
+catch-up) and `-DBEEB_MEASURE` still exist for splitting costs; the
+profile build (`-DBEEB_PROFILE`, above) is the usual tool now. `host/bench.exe
 roms/mos3.20 20000000` prints the same counters on the PC in a second; use
 it to see what a change does to call and chunk counts before flashing.
 Timings on the board are deterministic to the microsecond, so a single run
@@ -199,25 +205,47 @@ at offset 0. This is a V2 board (CO5300 panel, CST820 touch).
 
 ## Hardware facts that matter
 
-- ESP32-S3, dual Xtensa LX7 at 240 MHz, 512 KB SRAM (about 380 KB usable,
-  the skeleton prints the real figure at boot), 8 MB octal PSRAM, 16 MB QIO
-  flash. Icache 32 KB and dcache 64 KB are configured in `sdkconfig.defaults`.
+- ESP32-S3, dual Xtensa LX7 at 240 MHz, 512 KB SRAM, 8 MB octal PSRAM, 16 MB
+  QIO flash. Icache 32 KB and dcache 64 KB (`sdkconfig.defaults`).
 - PSRAM is cached but a miss costs tens of cycles; the emulation inner loop
-  must touch only internal SRAM, IRAM and flash-cached ROM.
-- Panel: CO5300 over QSPI at 80 MHz, RGB565, 368x448 portrait. FluidBox
-  sustains 100 fps full-frame with 28-row band DMA from two internal buffers.
-- Inputs: capacitive touch (CST820 at I2C 0x15), PWR button, QMI8658 IMU.
-  No keyboard. Audio: ES8311 codec over I2S with a speaker amp.
+  touches only internal SRAM, IRAM and flash-cached ROM.
+- Internal RAM is the scarce resource: about 18 KB of heap is left once
+  everything runs. The machine task's 16 KB stack is static for that
+  reason (a heap-allocated one silently failed to be created). Check
+  `idf.py size` (DIRAM) after adding anything resident.
+- IRAM text has a hard limit of about 168 KB (the link fails with
+  `dangerous relocation: j: cannot encode: xt_debugexception`). The core is
+  100 KB of it; the renderer runs from flash by choice.
+- Do not use `esp_partition_mmap` for the disc bundle: on this build it
+  handed out addresses inside the PSRAM heap's range and corrupted it.
+  `bundle.c` reads with `esp_partition_read`.
+- Panel: CO5300 over QSPI at 80 MHz, RGB565, 368x448 native portrait. It
+  ignores MADCTL's row/column exchange; bands are written rotated (see
+  `display.h`). V2 board: 16 pixel gap on the native column axis.
+- Inputs: CST820 touch at I2C 0x15 (register 0x00: fingers in byte 2, x/y
+  in bytes 3-6; the picture's long side is its y), PWR on the TCA9554
+  expander at 0x20 (EXIO4, high while held; a 6 s hold cuts power in the
+  AXP2101 at 0x34). No keyboard. Audio: ES8311 over I2S, amplifier enable
+  GPIO 46; the esp_codec_dev driver only knows standard rates (31250 Hz
+  played silence), so it runs at 32 kHz.
+- Task priorities on core 0 matter: the render task (5) is busy 80-99% of
+  the time, so anything that must run on time sits above it (input 7,
+  sound 6).
 
 ## Working rules for this repo
 
-- Phase order in `PLAN.md` is deliberate. Any change to the run loop's
-  structure (state in locals, computed-goto dispatch, 32-bit cycle counter)
-  gets re-measured with the Phase 0 harness before it is kept; the harness
-  stays in git history at the Phase 0 commit.
-- Core emulation files (`cpu6502.c`, `via.c`, `crtc.c`, `ula.c`,
-  `machine.c`) must compile on a desktop C compiler with no ESP headers, so
-  trace and frame diffs against beebjit run on the PC.
+- Measure before and after any performance change, on the board (STATS,
+  PROF with `-DBEEB_PROFILE`, the EVENTS/TTRUN renderer profile) and with
+  `host/bench.exe` for counts; write the numbers in the commit message and
+  in `docs/decisions.md`. The board is deterministic enough that one run
+  is a measurement.
+- Core emulation files (`cpu6502.c`, `via.c`, `crtc.c`, `machine.c`,
+  `fdc.c`, `disc.c`, `render.c`, `teletext.c`, `sn76489.c`) must compile on
+  a desktop C compiler with no ESP headers, so trace and frame diffs
+  against beebjit run on the PC.
+- Before committing a change to the machine, CPU or video: the disc boot
+  trace and the no-disc trace against beebjit, all frame cases
+  (`python tools/frametest.py`, and the indexed build), and the Klaus tests.
 - Every accuracy claim gets a diff against beebjit, not a visual check. The
   Klaus Dormann tests (`sh host/build.sh`) must keep passing after any CPU
   change; they take under a second.
