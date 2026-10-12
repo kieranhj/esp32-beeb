@@ -66,6 +66,27 @@ static const uint8_t *load_rom(const char *dir, const char *name)
 }
 
 static struct machine machine;
+// A disc image for a drive: pulses from the .ssd/.dsd (host memory).
+static struct disc *load_disc(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(2); }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *image = malloc((size_t)size);
+    if (fread(image, 1, (size_t)size, f) != (size_t)size) { fprintf(stderr, "%s: short\n", path); exit(2); }
+    fclose(f);
+    size_t len = strlen(path);
+    int sides = (len > 4 && (strcmp(path + len - 4, ".dsd") == 0 || strcmp(path + len - 4, ".DSD") == 0)) ? 2 : 1;
+    struct disc *d = calloc(1, sizeof *d);
+    uint32_t *pulses = malloc((size_t)sides * DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t));
+    disc_init(d, pulses, sides, 0);
+    disc_load_ssd(d, image, (uint32_t)size);
+    free(image);
+    return d;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -91,6 +112,15 @@ int main(int argc, char **argv)
     m->rom[0xe] = load_rom(dir, "view.rom");
     m->rom[0xf] = load_rom(dir, "terminal.rom");
     machine_reset(m);
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
+            machine_set_disc(m, 0, load_disc(argv[++i]));
+        } else if (strcmp(argv[i], "--disc1") == 0 && i + 1 < argc) {
+            machine_set_disc(m, 1, load_disc(argv[++i]));
+        } else if (strcmp(argv[i], "--autoboot") == 0) {
+            machine_autoboot(m);
+        }
+    }
 
     while (m->cpu.cycles < cycles) {
         machine_run(m, m->cpu.cycles + 100000);

@@ -12,6 +12,15 @@
 
 #include "render.h"
 
+#ifdef RENDER_EXACT_TELETEXT
+// Experiment: beebjit's always-run, always-decode teletext pipeline.
+#define TT_RUN(ma13, idle) 1
+#define TT_DECODE(m7) 1
+#else
+#define TT_RUN(ma13, idle) ((ma13) || (idle) < 2)
+#define TT_DECODE(m7) (m7)
+#endif
+
 #define BG PX_BLACK
 
 // Whether the emitter will use the second raster (line2) of the raster
@@ -299,7 +308,7 @@ static RENDER_FN void do_vsync(struct render *r)
     flush_line(r);
     r->frames++;
     RENDER_FRAME_HOOK(r);
-    if (r->compat_clear && r->framing_changed && r->buffer) {
+    if (r->compat_clear && (r->framing_changed || r->compat_clear == 2) && r->buffer) {
         for (uint32_t i = 0; i < RENDER_WIDTH * RENDER_HEIGHT; i++) {
             r->buffer[i] = BG;
         }
@@ -359,8 +368,8 @@ RENDER_FN void render_word(struct render *r, uint16_t w)
             r->is_dispen = dispen;
             select_func(r);
         }
-        if (!odd && (ma13 || r->teletext.idle_calls < 2)) {
-            teletext_data(&r->teletext, ma13 ? data : 0, ma13 ? dispen : 0, r->mode == RENDER_MODE7);
+        if (!odd && (TT_RUN(ma13, r->teletext.idle_calls))) {
+            teletext_data(&r->teletext, ma13 ? data : 0, ma13 ? dispen : 0, TT_DECODE(r->mode == RENDER_MODE7));
         }
         render_tick(r, data, odd);
         if (w & VS_PAIR) {
@@ -464,8 +473,8 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                     }
                     step = 16;
                 }
-                if (!(w & VS_ODD) && (ma13 || tt->idle_calls < 2)) {
-                    teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, mode7);
+                if (!(w & VS_ODD) && (TT_RUN(ma13, tt->idle_calls))) {
+                    teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, TT_DECODE(mode7));
                 }
                 horiz += step;
                 t++;
@@ -515,8 +524,8 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                 if (pos > RENDER_WIDTH - 16 || fast2) {
                     break;
                 }
-                if (ma13 || tt->idle_calls < 2) {
-                    teletext_data(tt, ma13 ? data : 0, ma13 ? dispen : 0, mode7);
+                if (TT_RUN(ma13, tt->idle_calls)) {
+                    teletext_data(tt, ma13 ? data : 0, ma13 ? dispen : 0, TT_DECODE(mode7));
                 }
                 if (mode7) {
                     teletext_render_pair(tt, line + pos, line2 + pos, want2);
@@ -546,8 +555,8 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                 }
                 continue;
             }
-            if (!odd && (ma13 || tt->idle_calls < 2)) {
-                teletext_data(tt, ma13 ? data : 0, ma13 ? dispen : 0, mode7);
+            if (!odd && (TT_RUN(ma13, tt->idle_calls))) {
+                teletext_data(tt, ma13 ? data : 0, ma13 ? dispen : 0, TT_DECODE(mode7));
             }
             if (mode7) {
                 teletext_render(tt, odd, line + pos, line2 + pos);

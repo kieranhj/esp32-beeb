@@ -18,6 +18,9 @@ import sys
 BJ = os.path.join("out", "beebjit-win", "beebjit.exe")
 FRAME = os.environ.get("FRAME_EXE", os.path.join("host", "frame.exe"))
 OUT = os.path.join("out", "frametest")
+# Both sides clear their canvas at every flyback: beebjit's paint scheduling
+# otherwise decides what stale content survives a framing change.
+ENV = dict(os.environ, FRAME_ALWAYS_CLEAR="1")
 
 # BBC keyboard matrix (row, col) and the beebjit key code, from beebjit's
 # keyboard_bbc_key_to_rowcol. Shifted characters list the unshifted key.
@@ -67,10 +70,16 @@ def key_events(text, start, step=160000, hold=80000):
     return events
 
 
+# Cycles after the last key before the dump; longer where the program must
+# have finished drawing (a dump mid-draw can catch a byte between the CPU's
+# write and the CRTC's fetch, see decisions.md).
+TEST_SETTLE = {"lines2": 4000000}
+
+
 def run_test(name, text, start=1520000, trace=False):
     os.makedirs(OUT, exist_ok=True)
     events = key_events(text + "\n", start)
-    end = events[-1][0] + 1500000
+    end = events[-1][0] + TEST_SETTLE.get(name, 1500000)
     bj_cmds = []
     for cycle, row, col, down, code in events:
         # The key lands at the next wakeup after the breakpoint; break 2000
@@ -79,7 +88,7 @@ def run_test(name, text, start=1520000, trace=False):
     bj_bin = os.path.join("..", "frametest", f"{name}_bj.bin")
     bj_cmds.append(f"breakat {end};c;dumpframe {bj_bin};q")
     bj_args = [os.path.abspath(BJ), "-master", "-mode", "interp", "-headless", "-fast",
-               "-accurate", "-debug", "-frame-cycles", "1", "-opt", "video:always-render"]
+               "-accurate", "-debug", "-frame-cycles", "1", "-opt", "video:always-render,video:always-clear"]
     if trace:
         bj_args += ["-print", "-opt", "debug:print-ticks"]
     bj_args += ["-commands", ";".join(bj_cmds)]
@@ -92,7 +101,7 @@ def run_test(name, text, start=1520000, trace=False):
         args += ["--trace", os.path.join(OUT, f"{name}_ours.txt")]
     for cycle, row, col, down, code in events:
         args += ["--key", str(cycle), str(row), str(col), str(down)]
-    subprocess.run(args, stderr=subprocess.DEVNULL)
+    subprocess.run(args, stderr=subprocess.DEVNULL, env=ENV)
     r = subprocess.run([sys.executable, "-I", os.path.join("tools", "framediff.py"),
                         os.path.join(OUT, f"{name}_bj.bin"), ours_bin, "--ppm",
                         os.path.join(OUT, name)], capture_output=True, text=True)
@@ -113,12 +122,54 @@ TESTS = {
 }
 
 
+# Disc cases: the disc autoboots (shift held from power on, released at
+# cycle 3000000, as beebjit's -autoboot) and the frame is taken at the
+# given cycle. Both emulators boot the same image read-only.
+DISC_TESTS = {
+    "tmoyos": ("crtc-tmoyos.ssd", 12000000),
+    "beebnyan": ("crtc-beebnyan.ssd", 12000000),
+    "infinity": ("crtc-mode-infinity.ssd", 12000000),
+    "nasty": ("crtc-somenastyeffects.ssd", 12000000),
+    "sugarsmash": ("crtc-sugarsmash.ssd", 12000000),
+}
+
+
+def run_disc_test(name, disc, end, trace=False):
+    os.makedirs(OUT, exist_ok=True)
+    disc_path = os.path.join("discs", disc)
+    bj_bin = os.path.join("..", "frametest", f"{name}_bj.bin")
+    bj_args = [os.path.abspath(BJ), "-master", "-mode", "interp", "-headless", "-fast",
+               "-accurate", "-debug", "-frame-cycles", "1", "-opt", "video:always-render,video:always-clear",
+               "-0", os.path.abspath(disc_path), "-autoboot"]
+    if trace:
+        bj_args += ["-print", "-opt", "debug:print-ticks"]
+    bj_args += ["-commands", f"breakat {end};c;dumpframe {bj_bin};q"]
+    with open(os.path.join(OUT, f"{name}_bj.txt"), "w") as bj_out:
+        subprocess.run(bj_args, cwd=os.path.dirname(BJ), stdout=bj_out if trace else subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    ours_bin = os.path.join(OUT, f"{name}_ours.bin")
+    args = [FRAME, os.path.join("roms", "mos3.20"), str(end), ours_bin,
+            "--disc", disc_path, "--autoboot"]
+    if trace:
+        args += ["--trace", os.path.join(OUT, f"{name}_ours.txt")]
+    subprocess.run(args, stderr=subprocess.DEVNULL, env=ENV)
+    r = subprocess.run([sys.executable, "-I", os.path.join("tools", "framediff.py"),
+                        os.path.join(OUT, f"{name}_bj.bin"), ours_bin, "--ppm",
+                        os.path.join(OUT, name)], capture_output=True, text=True)
+    print(f"{name}: {r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stderr.strip()}")
+    return r.returncode == 0
+
+
 def main():
     trace = "--trace" in sys.argv
-    names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(TESTS)
+    names = [a for a in sys.argv[1:] if not a.startswith("--")] or (list(TESTS) + list(DISC_TESTS))
     ok = True
     for name in names:
-        if not run_test(name, TESTS[name], trace=trace):
+        if name in DISC_TESTS:
+            disc, end = DISC_TESTS[name]
+            if not run_disc_test(name, disc, end, trace=trace):
+                ok = False
+        elif not run_test(name, TESTS[name], trace=trace):
             ok = False
         if trace:
             subprocess.run([sys.executable, "-I", os.path.join("tools", "tracediff.py"),

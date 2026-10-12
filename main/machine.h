@@ -23,6 +23,7 @@
 #include "cpu6502.h"
 #include "via.h"
 #include "crtc.h"
+#include "fdc.h"
 #include "vstream.h"
 
 #define MACHINE_SWRAM_SLOTS 4   // slots 4..7
@@ -62,7 +63,7 @@ struct machine {
     uint8_t keys[16];
     // Scheduled key events, applied by the catch-up at their exact cycle
     // (in order of cycle). machine_queue_key() adds; a 32-bit cycle count.
-    struct machine_key_event { uint32_t cycle; uint8_t row, col, down; } key_events[512];
+    struct machine_key_event { uint32_t cycle; uint8_t row, col, down; } key_events[256];
     uint16_t key_head, key_count;
 
     // CMOS/RTC (HD146818) as driven through the system VIA.
@@ -84,8 +85,13 @@ struct machine {
     uint8_t ula_ctrl, ula_pal[16];
     struct vstream *vs;        // video stream to the renderer, or NULL
 
-    // Stubs that Phase 4 replaces with real models.
-    uint8_t fdc_ctrl;
+    // The 1770 and its two drives; discs are attached with machine_set_disc.
+    struct fdc fdc;
+    // An NMI edge waiting to be handed to the core (which runs on a copy of
+    // its state, so the machine cannot poke it directly): the cycle it
+    // happened on. Delivered by the catch-up hooks like the IRQ line.
+    uint8_t nmi_edge;
+    uint32_t nmi_cycle;
 };
 
 extern uint8_t machine_profile_skip;   // measurement only, see machine.c
@@ -96,6 +102,11 @@ uint64_t machine_run(struct machine *m, uint64_t until);
 // Presses or releases a key of the BBC matrix (row 0-7, column 0-15); the
 // system VIA sees it at once.
 void machine_set_key(struct machine *m, int row, int col, int down);
+// Puts a disc (disc.h) in drive 0 or 1, or NULL to take it out.
+void machine_set_disc(struct machine *m, int drive, struct disc *d);
+// Holds shift from power on and releases it at cycle 3000000, as beebjit's
+// -autoboot does, so a disc's !BOOT runs.
+void machine_autoboot(struct machine *m);
 // Schedules a key change for an exact cycle count (events must be queued in
 // cycle order). Returns 0 if the queue is full.
 int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int down);

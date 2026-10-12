@@ -21,10 +21,12 @@ the 6845 in `main/crtc.c` and the video stream it emits; `main/render.c`
 and `main/teletext.c` turn the stream into pixels. On the host the
 instruction trace matches beebjit cycle for cycle through 10 M cycles of
 boot and through typed MODE changes, and ten frame comparisons (mode 7 boot,
-MODE 0 to 6, line drawing, VDU 19) are pixel identical. On the board the
+MODE 0 to 6, line drawing, VDU 19) are pixel identical. Discs load: the 1770 and the drives are beebjit's model restated, and
+an autobooted CRTC test disc traces identical to beebjit for 6 M cycles and
+renders identically 12 M cycles in, for all five test discs. On the board the
 picture is on the panel: the machine on core 1 paced to real time, the
 renderer and scaler on core 0, at about 80% of core 0 in bitmap modes and
-at the limit in mode 7. The panel orientation (mirror bits, V2 gap axis)
+at the limit in mode 7; the discs are not on the board yet. The panel orientation (mirror bits, V2 gap axis)
 has not been seen by a person yet: boot it and read the mode 7 banner, then
 fix `DISPLAY_MIRROR_X/Y` in `main/display.h` and `DISPLAY_GAP_X/Y` in
 `main/display.c` if it is mirrored, upside down or shifted by 16 pixels.
@@ -94,12 +96,16 @@ Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
       to beebjit's 768x640 canvas; `tools/framediff.py` and `framecrop.py`
       compare and show; `tools/frametest.py` types commands into both
       through the keyboard matrix at matching cycles.
-- [ ] Frame diffs on the CRTC test discs (`crtc-*.ssd`) and the demo set:
-      needs the 1770 and `.ssd` loading from Phase 4, then goes into
-      `tools/frametest.py` as more cases.
-- [ ] Mid-line palette writes land on the right pixel by construction (the
-      ULA event sits between the tick words); still to be shown on a demo
-      that does it, same dependency.
+- [x] Frame diffs on the five CRTC test discs (`crtc-*.ssd`), autobooted,
+      12 M cycles in: all pixel identical (`tools/frametest.py` cases
+      tmoyos, beebnyan, infinity, nasty, sugarsmash). Found and fixed the
+      display reading LYNNE when ACCCON X was set with D clear.
+- [ ] The rest of `discs/` as frame cases, a few frames into each demo;
+      and mid-line palette writes shown on a demo that does them.
+- [ ] A byte written by the CPU on the cycle the CRTC fetches it: one MODE 2
+      pixel differed in a frame dumped mid-DRAW (`lines2` now settles
+      first). Fetch-before-write or after, which beebjit does the other
+      way; find out which and match it.
 
 ## Phase 3: presentation
 
@@ -138,10 +144,12 @@ Next: Phase 4, the 1770 and the discs, which the CRTC test discs need.
 
 ## Phase 4: disc and sound
 
-- [ ] 1770 FDC: enough of the command set for DFS 2.24 on `.ssd`/`.dsd`
-      (restore, seek, read sector, read address, force interrupt, write
-      sector for demos that save state), with per-sector timing that keeps
-      loaders that poll the status register happy.
+- [x] 1770 FDC (`main/fdc.c`) and discs as pulses (`main/disc.c`): beebjit's
+      byte-level model, every command, both drives, FM and MFM. A disc
+      boot (shift held, DFS 2.24, a CRTC test disc) traces identical to
+      beebjit for 6 M cycles, every one of 2061 NMI edges on the same
+      cycle; the CRTC test discs render identically 12 M cycles in. Host
+      only so far: `host/frame.exe --disc x.ssd --autoboot`.
 - [ ] Disc source: embedded bundle in the `discs` flash partition (a simple
       directory of name/offset/size entries followed by raw images), plus
       `.ssd`/`.dsd` on the SD card over SDMMC. Sector reads from flash are

@@ -401,3 +401,58 @@ What it took to get there, each one measured on the board:
 
 Still owed: a person looking at the panel. The mirror bits and which axis
 the V2's 16 pixel gap lands on after rotation are guesses until then.
+
+## 2026-10-12: the 1770 and discs, cycle identical to beebjit
+
+The disc side is beebjit's model restated: a disc is pulses (32 two
+microsecond slots per 64 us position, 3125 positions a track, built from the
+.ssd with the standard DFS gaps), the drive delivers one position per timer
+tick, the controller recovers marks and bytes from the pulses and runs the
+command state machine on every byte, with its own timers for spin-up, seek
+steps, settle and the 32 us completion. Anything less would not have given
+the same NMI cycles, and the NMI cycles are what the trace diff checks: an
+autobooted CRTC test disc is identical for 6 M cycles (2.01 M instructions,
+2061 NMIs, every drive tick on the same cycle). What it took, each found by
+the diff:
+
+- The core runs on a local copy of its state, so the machine cannot set
+  its NMI flag directly: the edge and its cycle go through the catch-up
+  hooks like the IRQ line (`machine.nmi_edge`).
+- The interrupt poll is two cycles before the instruction's end *not
+  counting a 1 MHz access's stretch*: beebjit's interpreter polls before
+  the access, so an edge during the stretch waits an instruction. An IRQ
+  being taken vectors through NMI if the edge arrived after the poll.
+- Timers started from a 1770 register write (FE28-FE2B, 1 MHz) fire one
+  cycle later than ones started from a callback, and ones started from the
+  control register write (FE24, 2 MHz) do not: beebjit does the 1 MHz write
+  at the end of the stretched access, our write cycle is its start.
+- Same-cycle timers fire in arming order (beebjit's expiry list puts an
+  equal expiry after the ones already there). It did not matter in the
+  end but it is what the model does.
+- The keyboard's row 0 (shift, ctrl) is not wired to the CA2 interrupt:
+  holding shift at boot must not raise it.
+- beebjit's `-autoboot` is shift held from power on and released by a
+  timer at cycle 3000000; `machine_autoboot()` does the same.
+- Floating point: the drive's position-to-tick arithmetic is beebjit's
+  double sequence step for step, because its truncation decides whether a
+  position takes 127, 128 or 129 cycles.
+
+Frame diffs on the five CRTC test discs then found two things. The display
+was reading LYNNE whenever ACCCON X was set with D clear: beebjit's test is
+D ^ X only because its "main" pointer is the CPU's current view, which X
+swaps; the hardware rule is D alone. And `crtc-somenastyeffects` moves the
+picture with an R7 write mid-frame, after which beebjit's canvas keeps a
+few cells of the old frame where ours had cleared: a paint scheduling
+detail, not hardware, so the frame tests now run both sides with the
+canvas cleared at every flyback (`video:always-clear`, `FRAME_ALWAYS_CLEAR`).
+
+Open: a byte the CPU writes on the very cycle the CRTC fetches it. One
+MODE 2 pixel differed in a frame dumped mid-DRAW; the `lines2` case now
+settles first. Whether beebjit fetches before or after the write on that
+cycle is still to be read out of its video memory sync.
+
+Board: the disc code is kept out of IRAM (`FDC_API`, `DISC_API` noinline:
+one call per 64 us while a disc spins) and the pulses will live in PSRAM,
+1 MB a side. Also found here: the core's instruction loop head is
+duplicated into every opcode's tail by the compiler, so a few lines added
+there cost 34 KB of IRAM; the interrupt decision is now out of line.

@@ -73,7 +73,8 @@ struct render {
     int is_crt_grayscale_fakeout;
     uint32_t frames;                  // vsyncs seen (flyback count)
     // beebjit compatibility for frame diffs: clear the canvas at the
-    // flyback after a framing change, as beebjit does after its paint.
+    // flyback after a framing change, as beebjit does after its paint (1),
+    // or at every flyback (2, beebjit's video:always-clear-frame-buffer).
     int compat_clear;
     int framing_changed;
     uint32_t stat_fast_words, stat_slow_words;   // render_consume_n paths taken

@@ -517,6 +517,8 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->i = 1;
     cpu->irq_line = 0;
     cpu->nmi_pending = 0;
+    cpu->nmi_cycle = 0;
+    cpu->stretch = 0;
     cpu->irq_hist = 0;
     cpu->i_poll = 1;
     cpu->no_poll = 0;
@@ -527,6 +529,28 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->rd_tab = cpu->rd_tabs[0];
     cpu->wr_tab = cpu->wr_tabs[0];
     cpu->pc = vec[0xfc] | (vec[0xfd] << 8);
+}
+
+// Bit 2 of the history is the IRQ line two cycles before the instruction's
+// end, and an NMI edge counts if it was latched by then: the poll sits two
+// cycles into the instruction's own cycles, before a 1 MHz access's stretch
+// (beebjit's interpreter polls before the access), so an edge in the
+// stretch waits. An IRQ that is being taken vectors through NMI instead if
+// the edge arrived after the poll (the 65C12 as beebjit models it).
+// Returns 1 if an interrupt sequence ran.
+static CPU6502_CODE_ATTR __attribute__((noinline)) int take_interrupt(struct cpu6502 *cpu)
+{
+    int nmi_polled = cpu->nmi_pending && (int32_t)(cpu->cyc - cpu->stretch - cpu->nmi_cycle) >= 2;
+    if (!nmi_polled && !((cpu->irq_hist & 4) && !cpu->i_poll && !cpu->no_poll)) {
+        return 0;
+    }
+    int take_nmi = cpu->nmi_pending;
+    cpu->nmi_pending = 0;
+    CPU6502_TRACE_IRQ(cpu, take_nmi);
+    (void)rd(cpu, cpu->pc);
+    (void)rd(cpu, cpu->pc);
+    interrupt(cpu, take_nmi ? 0xfffa : 0xfffe, 0);
+    return 1;
 }
 
 CPU6502_CODE_ATTR
@@ -596,6 +620,8 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
 #undef T16
     void *const *dispatch = cpu->cmos ? cmos_table : nmos_table;
 
+
+
 #define OPC(h) op_##h:
 #define NEXT continue
 
@@ -608,24 +634,14 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
             cpu->irq_hist = (n >= 16) ? fill : ((cpu->irq_hist << n) | (fill & ((1u << n) - 1)));
             cpu->last_sync = cpu->cyc;
         }
-        // Interrupt decision for the instruction that just finished: bit 2
-        // of the history is the line two cycles before its end.
-        if (cpu->nmi_pending) {
-            cpu->nmi_pending = 0;
-            CPU6502_TRACE_IRQ(cpu, 1);
-            (void)rd(cpu, cpu->pc);
-            (void)rd(cpu, cpu->pc);
-            interrupt(cpu, 0xfffa, 0);
-            continue;
-        }
-        if ((cpu->irq_hist & 4) && !cpu->i_poll && !cpu->no_poll) {
-            CPU6502_TRACE_IRQ(cpu, 0);
-            (void)rd(cpu, cpu->pc);
-            (void)rd(cpu, cpu->pc);
-            interrupt(cpu, 0xfffe, 0);
+        // Interrupt decision for the instruction that just finished. The
+        // test here must stay tiny: this loop head is duplicated into every
+        // opcode's tail by the compiler, so the rest is out of line.
+        if (((cpu->irq_hist & 4) | cpu->nmi_pending) && take_interrupt(cpu)) {
             continue;
         }
 
+        cpu->stretch = 0;
         uint8_t op = fetch_opcode(cpu);
         uint16_t ea;
         uint8_t t;

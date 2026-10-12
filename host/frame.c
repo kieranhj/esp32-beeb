@@ -28,10 +28,11 @@ static void trace_line(struct cpu6502 *cpu, int kind);
 
 // Optional instruction trace (--trace file), same format as host/trace.c.
 static FILE *trace_file;
+static uint32_t trace_from;   // --trace-from: cycles before this are not written
 static const char *dumpram_path;
 static void trace_line(struct cpu6502 *cpu, int kind)
 {
-    if (!trace_file) {
+    if (!trace_file || cpu->cyc < trace_from) {
         return;
     }
     char f[9];
@@ -52,6 +53,27 @@ static void trace_line(struct cpu6502 *cpu, int kind)
 #include "../main/render.c"
 
 static struct machine machine;
+// A disc image for a drive: pulses from the .ssd/.dsd (host memory).
+static struct disc *load_disc(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(2); }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *image = malloc((size_t)size);
+    if (fread(image, 1, (size_t)size, f) != (size_t)size) { fprintf(stderr, "%s: short\n", path); exit(2); }
+    fclose(f);
+    size_t len = strlen(path);
+    int sides = (len > 4 && (strcmp(path + len - 4, ".dsd") == 0 || strcmp(path + len - 4, ".DSD") == 0)) ? 2 : 1;
+    struct disc *d = calloc(1, sizeof *d);
+    uint32_t *pulses = malloc((size_t)sides * DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t));
+    disc_init(d, pulses, sides, 0);
+    disc_load_ssd(d, image, (uint32_t)size);
+    free(image);
+    return d;
+}
+
 static struct vstream stream;
 static struct render render;
 static render_px canvas[RENDER_WIDTH * RENDER_HEIGHT];
@@ -63,22 +85,40 @@ static int field_horiz[8], field_vert[8];
 static unsigned long long stream_ticks;
 static void consume(struct render *r, struct vstream *vs)
 {
+    static long long dump_lo = -1, dump_hi = -1;
+    if (dump_lo < 0) {
+        const char *e = getenv("FRAME_DUMP_TICKS");
+        dump_lo = dump_hi = 0;
+        if (e) {
+            sscanf(e, "%lld,%lld", &dump_lo, &dump_hi);
+        }
+    }
     while (vs_available(vs) > 0) {
         uint16_t w = vs->ring[vs->tail & (VS_RING - 1)];
+        if ((w & VS_EVENT) && stream_ticks >= dump_lo && stream_ticks < dump_hi) {
+            fprintf(stderr, "t%llu %04x" "\n", stream_ticks, w);
+        }
         if (!(w & VS_EVENT)) {
             // A run of ticks goes through the renderer's fast path, as on
             // the board, so the frame tests cover it.
             int n = 0;
             while (n < vs_available(vs) && !(vs->ring[(vs->tail + n) & (VS_RING - 1)] & VS_EVENT)) {
+                uint16_t tw = vs->ring[(vs->tail + n) & (VS_RING - 1)];
+                if (stream_ticks >= dump_lo && stream_ticks < dump_hi) {
+                    fprintf(stderr, "t%llu %04x" "\n", stream_ticks, tw);
+                }
+                stream_ticks += (tw & VS_PAIR) ? 2 : 1;   // ticks, so it counts cycles
                 n++;
             }
-            stream_ticks += n;
             render_consume_n(r, vs, n);
             continue;
         }
         vs->tail++;
         if (getenv("FRAME_DEBUG") && ((w & 0xff) == VS_ULACTRL)) {
             fprintf(stderr, "stream tick %llu: ULACTRL %02x (teletext=%d)\n", stream_ticks, w >> 8, r->is_teletext);
+        }
+        if (getenv("FRAME_DEBUG") && (w & 0xff) == VS_ULAPAL) {
+            fprintf(stderr, "stream tick %llu: ULAPAL %02x" "\n", stream_ticks, w >> 8);
         }
         if ((w & VS_EVENT) && (w & 0xff) == VS_HSYNC) {
             field_hsyncs[field_count & 7]++;
@@ -122,6 +162,8 @@ int main(int argc, char **argv)
     // Events in command line order; both kinds share one list.
     struct { uint64_t cycle; int is_key; unsigned addr; const char *hex; int row, col, down; } pokes[512];
     int npokes = 0;
+    int autoboot = 0;
+    machine_init(m);
     for (int i = 4; i < argc; ) {
         if (strcmp(argv[i], "--writem") == 0 && i + 3 < argc && npokes < 512) {
             pokes[npokes].cycle = strtoull(argv[i + 1], NULL, 10);
@@ -147,6 +189,18 @@ int main(int argc, char **argv)
             pokes[npokes].is_key = 2;
             npokes++;
             i += 2;
+        } else if (strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
+            machine_set_disc(&machine, 0, load_disc(argv[i + 1]));
+            i += 2;
+        } else if (strcmp(argv[i], "--disc1") == 0 && i + 1 < argc) {
+            machine_set_disc(&machine, 1, load_disc(argv[i + 1]));
+            i += 2;
+        } else if (strcmp(argv[i], "--autoboot") == 0) {
+            autoboot = 1;
+            i += 1;
+        } else if (strcmp(argv[i], "--trace-from") == 0 && i + 1 < argc) {
+            trace_from = (uint32_t)strtoull(argv[i + 1], NULL, 10);
+            i += 2;
         } else if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
             trace_file = fopen(argv[i + 1], "w");
             i += 2;
@@ -155,7 +209,6 @@ int main(int argc, char **argv)
         }
     }
     int next_poke = 0;
-    machine_init(m);
     for (int i = 0; i < MACHINE_SWRAM_SLOTS; i++) {
         m->swram[i] = calloc(0x4000, 1);
     }
@@ -169,8 +222,11 @@ int main(int argc, char **argv)
     m->rom[0xf] = load_rom(argv[1], "terminal.rom");
     m->vs = &stream;
     render_init(&render, canvas);
-    render.compat_clear = 1;
+    render.compat_clear = getenv("FRAME_ALWAYS_CLEAR") ? 2 : 1;
     machine_reset(m);
+    if (autoboot) {
+        machine_autoboot(m);
+    }
     for (int i = 0; i < npokes; i++) {
         if (pokes[i].is_key == 1) {
             machine_queue_key(m, (uint32_t)pokes[i].cycle, pokes[i].row, pokes[i].col, pokes[i].down);
@@ -200,6 +256,8 @@ int main(int argc, char **argv)
                         c->address_counter, c->frames, c->vert_adjust_counter, c->is_end_of_main_latched,
                         c->is_end_of_vert_adjust_latched, c->is_end_of_frame_latched, c->is_in_vert_adjust,
                         c->in_dummy_raster, c->in_vsync, c->display_enable_bits, c->r4_hit, c->r9_hit);
+                fprintf(stderr, "  acccon=%02x romsel=%02x ula=%02x r12=%02x r13=%02x\n", m->acccon, m->romsel, m->ula_ctrl, c->reg[12], c->reg[13]);
+                fprintf(stderr, "  beam %ld,%ld render_pos %ld span %u..%u" "\n", (long)render.horiz_beam_pos, (long)render.vert_beam_pos, (long)render.render_pos, render.span_start, render.span_end);
             } else if (pokes[next_poke].is_key) {
                 // already queued at start
             } else {

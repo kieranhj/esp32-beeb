@@ -50,6 +50,42 @@ open(p, 'w', newline='\n').write(s)
 print("debug.c patched: dumpframe")
 PYEOF
 
+# NMI edge logging for matching the 1770 model: BEEBJIT_LOG_NMI=1 prints the
+# tick of every rising edge of the 1770's NMI line to stderr.
+python -I - "$PATCHED/wd_fdc.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read()
+anchor = '  state_6502_set_irq_level(p_state_6502, k_state_6502_irq_nmi, new_level);'
+assert anchor in s
+add = '  if (new_level && !old_level && getenv("BEEBJIT_LOG_NMI")) {' + chr(10)
+add += '    fprintf(stderr, "wdnmi %llu' + chr(92) + 'n",' + chr(10)
+add += '            (unsigned long long) timing_get_total_timer_ticks(p_fdc->p_timing));' + chr(10)
+add += '  }' + chr(10)
+s = s.replace(anchor, add + anchor)
+s = s.replace('#include <assert.h>', '#include <assert.h>' + chr(10) + '#include <stdio.h>' + chr(10) + '#include <stdlib.h>', 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("wd_fdc.c patched: nmi log")
+PYEOF
+
+# Likewise BEEBJIT_LOG_DRIVE=1 prints every drive timer tick: tick count,
+# track and head position before the controller sees the pulses.
+python -I - "$PATCHED/disc_drive.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read()
+anchor = '  uint32_t pulse_position = p_drive->pulse_position;'
+assert anchor in s
+add = anchor + chr(10)
+add += '  if (getenv("BEEBJIT_LOG_DRIVE")) {' + chr(10)
+add += '    fprintf(stderr, "drv %llu %u %u %u' + chr(92) + 'n", (unsigned long long) timing_get_total_timer_ticks(p_drive->p_timing), track, head_position, pulse_position);' + chr(10)
+add += '  }'
+s = s.replace(anchor, add, 1)
+s = s.replace('#include <assert.h>', '#include <assert.h>' + chr(10) + '#include <stdio.h>' + chr(10) + '#include <stdlib.h>', 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("disc_drive.c patched: drive log")
+PYEOF
+
 cat > "$OUT/stub.c" <<'STUB'
 /* beebjit declares this label .globl in asm/x64/asm_inturbo_x64.S but never
  * defines it; GNU as lets that pass, clang's assembler does not. */

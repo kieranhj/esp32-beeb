@@ -39,6 +39,8 @@ struct cpu6502 {
     // pulled); i_poll is that I value, no_poll marks the one-cycle NOPs.
     uint8_t irq_line;
     uint8_t nmi_pending;
+    uint32_t nmi_cycle;   // cycle the NMI edge was latched on
+    uint32_t stretch;     // 1 MHz stretch cycles in the current instruction
     uint32_t irq_hist;
     uint8_t i_poll, no_poll;
     // Cycle count at which the machine next has an event that can change

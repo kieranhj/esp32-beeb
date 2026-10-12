@@ -75,6 +75,27 @@ INLINE struct machine *crtc_owner(struct crtc *c);
     } while (0)
 #define CRTC_RUN_END(c) do { if (vs_) vs_->head = vh_; } while (0)
 #include "crtc.c"
+// The disc side is cold code (one call per 64 us while a disc spins):
+// keep it, and everything it inlines, out of the IRAM functions that call
+// it. On the board that leaves it in flash.
+#define DISC_API __attribute__((noinline))
+#define FDC_API __attribute__((noinline))
+#include "disc.c"
+#include "fdc.c"
+
+// The 1770's INTRQ or DRQ: the NMI line. The core latches the rising edge
+// with the cycle it happened on, for its interrupt poll.
+static void machine_fdc_nmi(void *ctx, int level)
+{
+    struct machine *m = ctx;
+#ifdef MACHINE_DEBUG_FDC
+    fprintf(stderr, "fdc nmi %d at %u\n", level, m->synced);
+#endif
+    if (level) {
+        m->nmi_edge = 1;
+        m->nmi_cycle = m->synced;
+    }
+}
 
 // Profiling switch for the per-cycle step (bit 0: skip the CRTC, bit 1:
 // skip the VIAs). Zero in normal use; main.c sets it while measuring.
@@ -111,7 +132,10 @@ static void remap_shadow(struct machine *m)
     int e = (m->acccon >> 1) & 1;
     int hazel = (m->acccon >> 3) & 1;
     int d = m->acccon & 1;
-    m->display_base = (d ^ x) ? m->lynne - 0x3000 : m->ram;
+    // ACCCON D alone picks what the display reads at 0x3000-0x7FFF: LYNNE
+    // when set, main RAM when clear. (beebjit's p_mem_base test is D ^ X
+    // because its "main" pointer is the CPU's current view, which X swaps.)
+    m->display_base = d ? m->lynne - 0x3000 : m->ram;
     int mos_shadow = (hazel && x) || (!hazel && e);
     uint8_t *usr = x ? m->lynne : m->ram + 0x3000;
     uint8_t *mos = mos_shadow ? m->lynne : m->ram + 0x3000;
@@ -173,15 +197,17 @@ static int key_down(const struct machine *m, int row, int col)
     return (m->keys[col & 0xf] >> (row & 7)) & 1;
 }
 
+// Row 0 (shift, ctrl, the links) is not wired to the CA2 interrupt: it
+// reads as a key but never raises the flag (beebjit's keyboard.c).
 static int key_column_down(const struct machine *m, int col)
 {
-    return m->keys[col & 0xf] != 0;
+    return (m->keys[col & 0xf] & ~1u) != 0;
 }
 
 static int any_key_down(const struct machine *m)
 {
     for (int i = 0; i < 16; i++) {
-        if (m->keys[i]) {
+        if (m->keys[i] & ~1u) {
             return 1;
         }
     }
@@ -390,6 +416,11 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
                 w = key_e;
             }
         }
+        // The disc drive's next position, or a 1770 timer.
+        uint32_t fdc_e = fdc_ticks_to_event(&m->fdc);
+        if (fdc_e < w) {
+            w = fdc_e;
+        }
 
         // The CRTC may cut the chunk short at a vsync change.
         uint32_t done = w;
@@ -420,6 +451,9 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
             }
         }
         m->synced = s + done;
+        if (fdc_e != 0xffffffffu) {
+            fdc_advance(&m->fdc, done, m->synced);
+        }
 
         // History: the old level for all but the last cycle of the chunk,
         // then the level after its events.
@@ -468,6 +502,15 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
             if ((int32_t)(v - due) < 0) {
                 due = v;
             }
+        }
+        {
+            uint32_t e = fdc_ticks_to_event(&m->fdc);
+            if (e != 0xffffffffu && (int32_t)(s + e - due) < 0) {
+                due = s + e;
+            }
+        }
+        if (m->nmi_edge) {
+            due = s;   // the core must take the edge at its next boundary
         }
         m->sync_due = due;
 
@@ -589,10 +632,11 @@ static MACHINE_NOINLINE uint8_t sheila_read(struct machine *m, uint16_t addr)
         ret = 0;
         break;
     case 0xfe24:
-        ret = 0;
+    case 0xfe2c:
+        ret = 0;   // the control register does not read back (beebjit: 0)
         break;
     case 0xfe28:
-        ret = 0;  // 1770 idle; Phase 4 replaces this
+        ret = fdc_read(&m->fdc, 4 + (addr & 3));
         break;
     case 0xfe30:
         ret = m->romsel;
@@ -621,6 +665,11 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
         if ((addr & 1) && m->vs && (m->crtc.addr_reg & 0x1f) <= 9) {
             vs_put(m->vs, VS_EV(VS_FRAMING, 0));
         }
+#ifdef MACHINE_DEBUG_CRTC
+        if (addr & 1) {
+            fprintf(stderr, "crtc R%u=%02x at %u" "\n", m->crtc.addr_reg, val, m->synced);
+        }
+#endif
         crtc_write(&m->crtc, addr & 1, val);
         break;
     case 0xfe08: case 0xfe0c:
@@ -655,7 +704,16 @@ static MACHINE_NOINLINE void sheila_write(struct machine *m, uint16_t addr, uint
         }
         break;
     case 0xfe24:
-        m->fdc_ctrl = val;
+#ifdef MACHINE_DEBUG_FDC
+        fprintf(stderr, "fdc control %02x at %u\n", val, m->synced);
+#endif
+        fdc_write(&m->fdc, 0, val);
+        break;
+    case 0xfe28:
+#ifdef MACHINE_DEBUG_FDC
+        fprintf(stderr, "fdc write %04x=%02x at %u (cur %d status %02x)\n", addr, val, m->synced, m->fdc.cur != NULL, m->fdc.status);
+#endif
+        fdc_write(&m->fdc, 4 + (addr & 3), val);
         break;
     case 0xfe30:
         m->romsel = val;
@@ -754,7 +812,7 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
 // ---- the core, specialised for this machine -------------------------------
 
 struct cpu6502;
-static inline __attribute__((always_inline)) void machine_cpu_sync(struct cpu6502 *cpu);
+static void machine_cpu_sync(struct cpu6502 *cpu);
 static inline __attribute__((always_inline)) uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr);
 static inline __attribute__((always_inline)) void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val);
 
@@ -765,7 +823,10 @@ static inline __attribute__((always_inline)) void machine_io_wr(struct cpu6502 *
 #define CPU6502_CODE_ATTR MACHINE_CODE_ATTR
 #include "cpu6502.c"
 
-INLINE void machine_cpu_sync(struct cpu6502 *cpu)
+// Out of line: it runs at events, not per instruction, and the core's
+// loop head (which the compiler copies into every opcode's tail) must stay
+// small. The NMI edge from any source is handed to the core here.
+static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
 {
     struct machine *m = cpu->m;
     STAT(m->stat_sync_boundary);
@@ -776,6 +837,11 @@ INLINE void machine_cpu_sync(struct cpu6502 *cpu)
     uint32_t r = machine_sync(m, cpu->cyc);
     cpu->irq_hist = (cpu->irq_hist << (r >> 16)) | (r & 0xffff);
     cpu->irq_line = r & 1;
+    if (m->nmi_edge) {
+        m->nmi_edge = 0;
+        cpu->nmi_pending = 1;
+        cpu->nmi_cycle = m->nmi_cycle;
+    }
     cpu->sync_due = m->sync_due;
     cpu->last_sync = cpu->cyc;
     cpu->wlo = m->wlo;
@@ -784,12 +850,19 @@ INLINE void machine_cpu_sync(struct cpu6502 *cpu)
 
 // Slow path results: bits 0-11 history, 12-15 stretch cycles to add to the
 // core's count, 16-23 history length, 24-31 data.
+// Inlined at every I/O access site in the core, which the compiler
+// replicates per opcode: keep it small. An NMI edge raised during the
+// access is handed over by the sync hook, which the slow path forces.
 INLINE void machine_io_apply(struct cpu6502 *cpu, uint32_t r)
 {
+    struct machine *m = cpu->m;
     cpu->cyc += (r >> 12) & 0xf;
+    // The slow path counts the access cycle itself; the stretch beyond a
+    // 2 MHz access is one less (see the NMI poll in cpu6502.c).
+    cpu->stretch += ((r >> 12) & 0xf) - 1;
     cpu->irq_hist = (cpu->irq_hist << ((r >> 16) & 0xff)) | (r & 0xfff);
     cpu->irq_line = r & 1;
-    cpu->sync_due = ((struct machine *)cpu->m)->sync_due;
+    cpu->sync_due = m->sync_due;
     cpu->last_sync = cpu->cyc;
     cpu->wlo = ((struct machine *)cpu->m)->wlo;
     cpu->whi = ((struct machine *)cpu->m)->whi;
@@ -832,6 +905,18 @@ void machine_init(struct machine *m)
     m->cpu.wr_tabs[1] = m->wr_tab[1];
     m->sysvia.port_cb = sysvia_port_cb;
     m->sysvia.ctx = m;
+    fdc_init(&m->fdc, machine_fdc_nmi, m);
+}
+
+void machine_set_disc(struct machine *m, int drive, struct disc *d)
+{
+    m->fdc.drive[drive & 1].disc = d;
+}
+
+void machine_autoboot(struct machine *m)
+{
+    machine_set_key(m, 0, 0, 1);
+    machine_queue_key(m, 3000000, 0, 0, 0);
 }
 
 void machine_reset(struct machine *m)
@@ -862,6 +947,7 @@ void machine_reset(struct machine *m)
     m->cpu.cyc = 0;
     m->synced = 0;
     cpu6502_reset(&m->cpu);
+    fdc_power_on_reset(&m->fdc);
 }
 
 uint64_t machine_run(struct machine *m, uint64_t until)

@@ -66,8 +66,15 @@ host/frame.exe roms/mos3.20 2000000 out/f.bin --key <cycle> <row> <col> <down> -
 
 `host/frame.exe` renders our video stream the way beebjit renders, dumps the
 768x640 canvas, and can press keys at exact cycles, poke RAM, print CRTC
-counters and beam positions (`--crtc`, with `FRAME_DEBUG=1`) and write a
-trace (`--trace`). `tools/frametest.py` drives both emulators through the
+counters and beam positions (`--crtc`, with `FRAME_DEBUG=1`), write a
+trace (`--trace`, from a cycle with `--trace-from`), put a disc in a drive
+(`--disc`, `--disc1`) and autoboot it (`--autoboot`; beebjit: `-0 disc
+-autoboot`). `host/trace.exe` takes `--disc` and `--autoboot` too. The
+beebjit build script also patches in `BEEBJIT_LOG_NMI=1` and
+`BEEBJIT_LOG_DRIVE=1`, which print every 1770 NMI edge and drive tick with
+its cycle to stderr; `host/trace.exe` built with `-DMACHINE_DEBUG_FDC
+-include stdio.h` prints ours. beebjit's debugger `p` toggles instruction
+printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`. `tools/frametest.py` drives both emulators through the
 keyboard matrix; its cases are the regression set for video changes. Build
 it a second time with `-DRENDER_INDEXED` (the board's pixel type) as
 `host/frame_idx.exe` and run the bitmap cases with
