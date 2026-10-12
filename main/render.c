@@ -222,40 +222,73 @@ static RENDER_FN void generate_2mhz(struct render *r, render_px (*table)[8], uin
 }
 
 #ifdef RENDER_INDEXED
-// One entry from its packed logical indices, a word (four pixels) at a
-// time: phys4 holds each physical colour in all four lanes, phys2 in two.
-static inline RENDER_FN void fill_entry_lanes(uint32_t *out, uint32_t words, uint32_t packed, uint32_t num_pixels,
-                                              const uint32_t phys4[16], const uint32_t phys2[16],
-                                              const render_px phys[16])
+// Rebuilds the entries of one table whose pixels use a colour in `bit`,
+// from their packed logical indices, a word (four pixels) at a time:
+// phys4 holds each physical colour in all four lanes, phys2 in two. The
+// stride (output pixels per source pixel) is decided once, outside the
+// loop: a demo rewriting the whole palette every scanline rebuilds all
+// 256 entries each time.
+static RENDER_FN void rebuild_table_lanes(uint32_t *tab, uint32_t words, const uint32_t *packed,
+                                          const uint16_t *logicals, uint16_t bit, uint32_t num_pixels,
+                                          const uint32_t phys4[16], const uint32_t phys2[16],
+                                          const render_px phys[16])
 {
-    uint32_t stride = (words * 4) / num_pixels;   // output pixels per source pixel
+    uint32_t stride = (words * 4) / num_pixels;
     switch (stride) {
-    case 1:   // eight distinct pixels a word pair (MODE 0 at 2 MHz)
-        for (uint32_t w = 0; w < words; w++) {
-            uint32_t p = packed >> (16 * w);
-            out[w] = phys[p & 15] | ((uint32_t)phys[(p >> 4) & 15] << 8) |
-                     ((uint32_t)phys[(p >> 8) & 15] << 16) | ((uint32_t)phys[(p >> 12) & 15] << 24);
+    case 1:   // four distinct pixels a word (MODE 0)
+        for (uint32_t i = 0; i < 256; i++) {
+            if (logicals[i] & bit) {
+                uint32_t *out = tab + i * words;
+                for (uint32_t w = 0; w < words; w++) {
+                    uint32_t p = packed[i] >> (16 * w);
+                    out[w] = phys[p & 15] | ((uint32_t)phys[(p >> 4) & 15] << 8) |
+                             ((uint32_t)phys[(p >> 8) & 15] << 16) | ((uint32_t)phys[(p >> 12) & 15] << 24);
+                }
+            }
         }
         break;
     case 2:   // two source pixels a word (MODE 1; MODE 4)
-        for (uint32_t w = 0; w < words; w++) {
-            uint32_t p = packed >> (8 * w);
-            out[w] = phys2[p & 15] | (phys2[(p >> 4) & 15] << 16);
+        for (uint32_t i = 0; i < 256; i++) {
+            if (logicals[i] & bit) {
+                uint32_t *out = tab + i * words;
+                for (uint32_t w = 0; w < words; w++) {
+                    uint32_t p = packed[i] >> (8 * w);
+                    out[w] = phys2[p & 15] | (phys2[(p >> 4) & 15] << 16);
+                }
+            }
         }
         break;
     case 4:   // one source pixel a word (MODE 2; MODE 5)
-        for (uint32_t w = 0; w < words; w++) {
-            out[w] = phys4[(packed >> (4 * w)) & 15];
+        for (uint32_t i = 0; i < 256; i++) {
+            if (logicals[i] & bit) {
+                uint32_t *out = tab + i * words;
+                uint32_t p = packed[i];
+                for (uint32_t w = 0; w < words; w++) {
+                    out[w] = phys4[(p >> (4 * w)) & 15];
+                }
+            }
         }
         break;
     case 8:   // one source pixel per two words
-        for (uint32_t w = 0; w < words; w++) {
-            out[w] = phys4[(packed >> (2 * w)) & 15];
+        for (uint32_t i = 0; i < 256; i++) {
+            if (logicals[i] & bit) {
+                uint32_t *out = tab + i * words;
+                uint32_t p = packed[i];
+                for (uint32_t w = 0; w < words; w++) {
+                    out[w] = phys4[(p >> (2 * w)) & 15];
+                }
+            }
         }
         break;
     default:  // one source pixel for the whole entry
-        for (uint32_t w = 0; w < words; w++) {
-            out[w] = phys4[packed & 15];
+        for (uint32_t i = 0; i < 256; i++) {
+            if (logicals[i] & bit) {
+                uint32_t *out = tab + i * words;
+                uint32_t v = phys4[packed[i] & 15];
+                for (uint32_t w = 0; w < words; w++) {
+                    out[w] = v;
+                }
+            }
         }
         break;
     }
@@ -280,35 +313,51 @@ static RENDER_FN void palette_fixup(struct render *r)
         phys2[i] = phys[i] * 0x0101u;
     }
 #endif
+    // Only the table of the current clock is fixed up; the other is
+    // marked unbuilt and regenerated in full when a mode switch next needs
+    // it, instead of being rebuilt at every palette write meanwhile.
+    int fast = r->mode == RENDER_MODE0 || r->mode == RENDER_MODE1 || r->mode == RENDER_MODE2 ||
+               r->mode == RENDER_MODE2_10;
+    if (fast) {
+        r->tables_built &= ~2u;
+    } else {
+        r->tables_built &= ~1u;
+    }
     if (r->tables_built & 1) {
         int mode = r->table_mode[0];
         uint32_t n = mode == RENDER_MODE0 ? 8 : mode == RENDER_MODE1 ? 4 : mode == RENDER_MODE2 ? 2 : 1;
+#ifdef RENDER_INDEXED
+        rebuild_table_lanes((uint32_t *)r->table_2mhz, 2, r->packed_idx[0], r->byte_logicals[0], bit, n,
+                            phys4, phys2, phys);
+#else
         for (uint32_t i = 0; i < 256; i++) {
             if (r->byte_logicals[0][i] & bit) {
-#ifdef RENDER_INDEXED
-                fill_entry_lanes((uint32_t *)r->table_2mhz[i], 2, r->packed_idx[0][i], n, phys4, phys2, phys);
-#else
                 fill_entry(r->table_2mhz[i], 8, i, n, phys);
-#endif
             }
         }
+#endif
     }
     if (r->tables_built & 2) {
         int mode = r->table_mode[1];
         uint32_t n = mode == RENDER_MODE4_80 ? 16 : mode == RENDER_MODE4 ? 8 : mode == RENDER_MODE5 ? 4 : 2;
+#ifdef RENDER_INDEXED
+        if (n == 16) {
+            for (uint32_t i = 0; i < 256; i++) {   // 16 pixels a byte: no packing
+                if (r->byte_logicals[1][i] & bit) {
+                    fill_entry(r->table_1mhz[i], 16, i, n, phys);
+                }
+            }
+        } else {
+            rebuild_table_lanes((uint32_t *)r->table_1mhz, 4, r->packed_idx[1], r->byte_logicals[1], bit, n,
+                                phys4, phys2, phys);
+        }
+#else
         for (uint32_t i = 0; i < 256; i++) {
             if (r->byte_logicals[1][i] & bit) {
-#ifdef RENDER_INDEXED
-                if (n == 16) {
-                    fill_entry(r->table_1mhz[i], 16, i, n, phys);   // 16 pixels a byte: no packing
-                } else {
-                    fill_entry_lanes((uint32_t *)r->table_1mhz[i], 4, r->packed_idx[1][i], n, phys4, phys2, phys);
-                }
-#else
                 fill_entry(r->table_1mhz[i], 16, i, n, phys);
-#endif
             }
         }
+#endif
     }
 }
 

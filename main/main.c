@@ -192,6 +192,20 @@ static void beeb_task(void *arg)
             if (target > m->cpu.cycles + 40000) {
                 target = m->cpu.cycles + 40000;
             }
+            // Never lap the renderer: the ring holds VS_RING words and the
+            // machine writes at most one per cycle. Wait for room instead
+            // of overwriting what core 0 has not drawn (a tear).
+            if (m->vs) {
+                int32_t room = (int32_t)VS_RING - vs_available(m->vs) - 512;
+                if (room < 2000) {
+                    sleeps++;
+                    vTaskDelay(1);
+                    continue;
+                }
+                if (target > m->cpu.cycles + (uint64_t)room) {
+                    target = m->cpu.cycles + (uint64_t)room;
+                }
+            }
             uint64_t before = m->cpu.cycles;
             uint32_t c0 = esp_cpu_get_cycle_count();
             machine_run(m, target);
