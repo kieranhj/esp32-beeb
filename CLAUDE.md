@@ -87,7 +87,11 @@ beebjit build script also patches in `BEEBJIT_LOG_NMI=1` and
 `BEEBJIT_LOG_DRIVE=1`, which print every 1770 NMI edge and drive tick with
 its cycle to stderr; `host/trace.exe` built with `-DMACHINE_DEBUG_FDC
 -include stdio.h` prints ours. beebjit's debugger `p` toggles instruction
-printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`. `tools/frametest.py` drives both emulators through the
+printing, so a trace of a late window is `breakat N;c;p;breakat M;c;q`. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
+into both emulators (beebjit `writem`/`e pc=`, ours `TRACE_JSR`) and
+diffs the traces: the regression test for VIA accesses that land on a
+timer event; run it for a few latch values. `TRACE_FROM=<cycle>` limits
+our trace to a window. `tools/frametest.py` drives both emulators through the
 keyboard matrix; its cases are the regression set for video changes. Build
 it a second time with `-DRENDER_INDEXED` (the board's pixel type) as
 `host/frame_idx.exe` and run the bitmap cases with

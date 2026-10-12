@@ -37,7 +37,7 @@ python tools/capture.py 30 COM3                   # boot log and STATS lines
 ```
 
 On the board: touch holds Space, a long press adds Return, a swipe along the
-long side changes disc, a short PWR press restarts, a 6 s hold powers off.
+long side changes disc, a short PWR press restarts, a 2 s hold turns the sound off or on, a 6 s hold powers off.
 
 ## Licence
 

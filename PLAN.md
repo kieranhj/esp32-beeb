@@ -31,13 +31,12 @@ core 0 load), from the STATS line:
 | crtc-tmoyos | about 100 | 52-65% |
 | bs-wave-runner | 92 | 70% |
 | mmode7, bs-bar-beeb (teletext) | 75-79 | 79-80% |
-| bs-beebstep, bs-teletextr | 117-121 | 83-86% |
-| bs-twisted | about 125 | 53-95% |
-| bs-sotc, bs-mott (VIA pollers) | about 139 | 55% |
+| bs-beebstep, bs-teletextr (loading) | 104-107 | 83-86% |
+| bs-twisted | 107 loading; the effect not re-measured (was about 125) | 53-95% |
+| bs-sotc, bs-mott (VIA pollers) | 111-117 | 60% |
 
-Next: core 1's cost per I/O instruction (the heavy demos are 5 to 15%
-over), then the SN76489 write cycle, then frame cases for the rest of
-`discs/`.
+Next: twisted's effect on the board, then the SN76489 write cycle, then
+frame cases for the rest of `discs/`.
 
 ## The budget
 
@@ -157,15 +156,19 @@ over), then the SN76489 write cycle, then frame cases for the rest of
 - [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
       a continuation write (0x3C) would halve the transactions per band.
       The scaler is 14%; a two-pixel lookup would help.
-- [ ] Core 1 on the heavy demos: bs-twisted about 125 clocks per cycle,
-      the VIA pollers bs-sotc and bs-mott about 139, bs-beebstep and
-      bs-teletextr 117-121 while loading. An I/O instruction costs the
-      core about 200 clocks before the machine does anything (sotc's
-      two-instruction `LDA &FE4D : BPL` loop: about 100 clocks a cycle of
-      core alone, against about 45 on ordinary code); the I/O path through
-      the core has not been looked at since Phase 1. Twisted Brain's CRTC
-      and ULA writes every scanline are full catch-ups by necessity; its
-      remaining fat is the catch-up's fixed cost (prologue and schedule).
+- [x] Core 1 on the VIA pollers and while loading: sotc and mott 139 ->
+      111-117 (the quiet VIA path tests the sync point instead of
+      recomputing it, and no longer steps through an event tick on the
+      access cycle), loading 118-121 -> 104-107 (the 1770's drive timing
+      without soft-float doubles). See decisions, "core 1 under budget".
+- [ ] bs-twisted's effect on the board (about 125 before the changes
+      above): its CRTC and ULA writes every scanline are full catch-ups;
+      what is left is the catch-up's fixed cost (prologue and schedule).
+      Needs a capture long enough to reach it.
+- [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
+      CRTC's wrap at once, but the access may have left the CRTC behind:
+      catch it up first if the wrap changes. Make a frame case that shows
+      it against beebjit before fixing.
 
 ## Phase 4: disc and sound
 
@@ -204,7 +207,8 @@ over), then the SN76489 write cycle, then frame cases for the rest of
       with Shift+BREAK held through reset.
 - [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
       a swipe along the picture moves to the next or previous disc in the
-      bundle (persisted, then reboot), a PWR short press restarts. Polled at
+      bundle (persisted, then reboot), a PWR short press restarts, a 2 s
+      hold turns the sound off or on (not yet tried by hand). Polled at
       50 Hz on core 0, keys handed to the machine through its key queue.
       Tried on the board: taps, swipes and PWR work.
 - [ ] Shake (IMU, code in fluidbox `imu.c`) to reset; a per-disc key map.

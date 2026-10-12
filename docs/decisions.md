@@ -694,3 +694,70 @@ blanking by arithmetic): 472 -> 380 clocks.
 Where core 0 goes on mmode7 now, per second: the run about 21%, hsync
 26% (most of it the scaler, about 2.6 K clocks a panel row with the
 strided stores of the rotated band), skips 6%, queueing bands 6%.
+
+## 2026-10-12: core 1 under budget on the pollers and while loading
+
+The heavy demos were 5 to 15% over the 120-clock budget. Two causes, both
+found by measuring rather than in the CPU core, where the last entry
+expected them.
+
+The VIA pollers (sotc, mott: `LDA &FE4D : BPL` every 8.6 cycles). PROF's
+`io` clock covered only the general access path; the quiet path returned
+before it was counted, so its cost had been read as the core's. Timed
+(the PROF line's new `quiet` field) it was 354 clocks an access: it
+recomputed both VIAs' next events, the CRTC's check horizon and the
+1770's, then both VIAs' again to reschedule. All of that is already in
+the scheduler's sync point, which is the earliest event of every kind and
+can only be moved by an access. The quiet test is now "the access cycle
+is before m->sync_due, the 1770 and ADC idle (recorded by the scheduler),
+no key queued"; a read keeps the sync point (a read moves no timer
+event), a write reschedules from the VIAs as before. 147 clocks an
+access. The core's side of an access, looked at in the disassembly, is
+about 20 instructions around the call8 and was never the problem.
+
+The old test also had a bug: it let through an access whose cycle was a
+VIA event tick (a T1 or T2 underflow on the very cycle of the read) and
+stepped it by subtraction, so the flag was never raised and T1 did not
+reload. 301 such accesses on sotc's boot, invisible there (T1's interrupt
+off, never read), but a loop polling T1's flag diverged from beebjit
+10 K cycles in for four latch values out of five. `tools/t1poll.sh` is
+that loop, poked into both emulators at cycle 2 M of a no-disc boot
+(beebjit `writem` and `e pc=`; `TRACE_JSR` in `host/trace.c`); identical
+now. beebjit runs the opcode it had already fetched after `e pc=`, hence
+the NOP the test starts with.
+
+Loading (beebstep, teletextr, and twisted between parts, all in DFS's
+read loop at &8E1B). The board's profile put the 1770 at 25-31 clocks
+per emulated cycle, against 3 on the host. The drive tick (every 64 us)
+times the head with beebjit's double arithmetic, two positions and an
+index test, and the ESP32-S3 has only a single-precision FPU: 14
+soft-float calls a tick. With the standard track length a position's
+time is (head * 32 + pulse) * 4 exactly, less one where the doubles
+round down; those 341 positions out of 6252, and the first head past the
+index pulse, are worked out once at fdc_init with the same expressions,
+and checked exhaustively equal. Moving the per-byte path into IRAM as
+well (4.2 KB) gave a board that stopped printing once the machine
+started; not diagnosed, since flash measured well enough without the
+doubles.
+
+Board, normal builds, core 1 clocks per emulated cycle, steady state:
+
+| disc | before | after |
+|---|---|---|
+| bs-sotc | 132-136 | 111-117 |
+| bs-mott | 136-137 | 114-116 |
+| bs-beebstep (loading) | 118-120 | 104-105 |
+| bs-teletextr (loading) | 120-121 | 106-107 |
+| bs-twisted (loading) | 121 | 107 |
+| bs-sotc, first 5 s (loading) | 152 | 143 |
+
+What is left on sotc (profile build, 117 clocks): the quiet path 16.5,
+the general path 19.4 (6300 accesses per million cycles that meet the
+sync point; most of that is the deferred CRTC catching up, work the CRTC
+does anyway), the core the rest. Twisted's effect itself was not reached
+in a capture this session.
+
+Seen in passing, not yet tested: an IC32 write through the system VIA
+that changes the screen size (bits 4 and 5) sets the CRTC's wrap at once,
+while that access may have left the CRTC behind, so the deferred run
+would fetch the rest of that scanline with the new wrap.
