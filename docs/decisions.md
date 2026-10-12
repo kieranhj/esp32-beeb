@@ -661,3 +661,10 @@ landscape rows is 16 native columns by 448 native rows, landscape pixel
 a fixed row window. No extra buffer; the scaler's stores become strided
 16-bit ones. Which way round it comes out is a guess until seen: the
 mirror defines in display.h turn it.
+
+Input, first tried by a person: taps worked only now and then and PWR
+not at all, because the input task (priority 3) sat below the render
+task (5), which keeps core 0 busy 95% of the time. It runs at 7 now and
+polls a steady 50 times a second. Swipes came out as taps because they
+were looked for along native x; with the panel in its native
+orientation the picture's long side is the touch controller's y.

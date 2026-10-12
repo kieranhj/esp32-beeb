@@ -190,8 +190,8 @@ instruction, then sound.
       averages eight steps per 31250 Hz sample, blocks DC and writes the
       ES8311 over I2S (`main/sound_esp.c`, esp_codec_dev). The boot beep
       and a demo's tune come out right on the host (`host/sound.exe` writes
-      a WAV and reports per half second); nobody has listened on the board
-      yet. `beeb.py COM3 vol 50` sets and keeps the volume.
+      a WAV and reports per half second) and the board plays (32 kHz: the
+      ES8311 driver has no 31250 Hz clock entry). `beeb.py COM3 vol 50` sets and keeps the volume.
 - [ ] The chip's 8 us write cycle (beebjit's synchronous mode): bytes are
       taken as they land, which a sample player writing the volume
       thousands of times a second may not survive.
@@ -204,8 +204,7 @@ instruction, then sound.
       a swipe along the picture moves to the next or previous disc in the
       bundle (persisted, then reboot), a PWR short press restarts. Polled at
       50 Hz on core 0, keys handed to the machine through its key queue.
-      Not yet tried by a person: the touch controller and the expander
-      answer at boot, nobody has touched the panel with this firmware.
+      Tried on the board: taps, swipes and PWR work.
 - [ ] Shake (IMU, code in fluidbox `imu.c`) to reset; a per-disc key map.
 - [ ] Per-disc notes file in the bundle: machine quirks, which key the
       demo wants, whether it needs sideways RAM in a particular slot.

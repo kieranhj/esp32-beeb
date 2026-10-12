@@ -87,12 +87,20 @@ static void change_disc(int step)
 }
 
 // One poll of the touch controller: finger down, position.
+static uint32_t s_polls, s_touch_errors, s_touch_down, s_button_errors;
+static uint8_t s_last_touch[7], s_last_button;
+
 static int read_touch(int *x, int *y)
 {
     uint8_t reg = 0;
     uint8_t buf[7];
     if (i2c_master_transmit_receive(s_touch, &reg, 1, buf, sizeof buf, 20) != ESP_OK) {
+        s_touch_errors++;
         return 0;
+    }
+    memcpy(s_last_touch, buf, sizeof buf);
+    if (buf[2] & 0x0f) {
+        s_touch_down++;
     }
     int fingers = buf[2] & 0x0f;
     *x = ((buf[3] & 0x0f) << 8) | buf[4];
@@ -104,8 +112,10 @@ static int read_button(void)
 {
     uint8_t reg = EXPANDER_REG_INPUT, v = 0;
     if (i2c_master_transmit_receive(s_expander, &reg, 1, &v, 1, 20) != ESP_OK) {
+        s_button_errors++;
         return 0;
     }
+    s_last_button = v;
     return (v & PWR_BIT) != 0;
 }
 
@@ -120,6 +130,16 @@ static void input_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(POLL_MS));
         int64_t now = esp_timer_get_time();
+        static int64_t next_log;
+        s_polls++;
+        if (now >= next_log && (s_touch_down || s_touch_errors || s_button_errors)) {
+            next_log = now + 1000000;
+            ESP_LOGI(TAG, "polls %u, touch down %u errors %u (last %02x %02x %02x %02x %02x %02x %02x), expander %02x errors %u",
+                     (unsigned)s_polls, (unsigned)s_touch_down, (unsigned)s_touch_errors,
+                     s_last_touch[0], s_last_touch[1], s_last_touch[2], s_last_touch[3], s_last_touch[4],
+                     s_last_touch[5], s_last_touch[6], s_last_button, (unsigned)s_button_errors);
+            s_polls = s_touch_down = s_touch_errors = s_button_errors = 0;
+        }
 
         // Touch: Space while down; a long press adds Return; a swipe on
         // release changes disc.
@@ -147,11 +167,11 @@ static void input_task(void *arg)
                     post_key(KEY_RETURN_ROW, KEY_RETURN_COL, 0);
                 }
                 int dx = x - x0, dy = y - y0;
-                if (now - down_at < 600 * 1000 && abs(dx) > SWIPE_PX && abs(dx) > abs(dy)) {
-                    // The panel is rotated: its x runs down the picture's
-                    // long side, so a swipe along the picture is in x.
-                    ESP_LOGI(TAG, "swipe %s", dx > 0 ? "right" : "left");
-                    change_disc(dx > 0 ? 1 : -1);
+                if (now - down_at < 600 * 1000 && abs(dy) > SWIPE_PX && abs(dy) > abs(dx)) {
+                    // The panel runs in its native portrait orientation, so
+                    // the picture's long side is the touch controller's y.
+                    ESP_LOGI(TAG, "swipe %s", dy > 0 ? "forward" : "back");
+                    change_disc(dy > 0 ? 1 : -1);
                 } else if (now - down_at < 600 * 1000) {
                     ESP_LOGI(TAG, "tap at %d,%d: Space", x0, y0);
                 }
@@ -217,6 +237,8 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c)
             s_expander = NULL;
         }
     }
-    xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, 3, NULL, 0);
+    // Above the render task (5), which keeps core 0 busy almost all the time:
+    // at a lower priority the polls ran late or not at all.
+    xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, 7, NULL, 0);
     return ESP_OK;
 }
