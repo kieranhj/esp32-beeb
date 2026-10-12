@@ -3,6 +3,7 @@
 // IDF console is on; output goes through printf like the STATS lines.
 #include "console.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -12,6 +13,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "bundle.h"
+#include "sound_esp.h"
 
 static const char *TAG = "console";
 
@@ -27,6 +29,28 @@ void console_get_disc(char *out, unsigned len)
         out[0] = 0;
     }
     nvs_close(h);
+}
+
+int console_get_volume(void)
+{
+    nvs_handle_t h;
+    int32_t vol = 70;
+    if (nvs_open("beeb", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_i32(h, "vol", &vol);
+        nvs_close(h);
+    }
+    return (int)vol;
+}
+
+static void set_volume(int vol)
+{
+    nvs_handle_t h;
+    if (nvs_open("beeb", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_i32(h, "vol", vol);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    sound_set_volume(vol);
 }
 
 static void set_disc(const char *name)
@@ -53,7 +77,7 @@ static void command(char *line)
         }
     }
     if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
-        printf("console: help | list | boot <disc> | reset\n");
+        printf("console: help | list | boot <disc> | vol <0-100> | reset\n");
     } else if (strcmp(line, "list") == 0) {
         char cur[32];
         console_get_disc(cur, sizeof cur);
@@ -72,6 +96,10 @@ static void command(char *line)
         fflush(stdout);
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
+    } else if (strcmp(line, "vol") == 0) {
+        int vol = atoi(arg);
+        set_volume(vol);
+        printf("console: volume %d\n", vol);
     } else if (strcmp(line, "reset") == 0) {
         printf("console: reset\n");
         fflush(stdout);

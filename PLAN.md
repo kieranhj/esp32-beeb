@@ -180,9 +180,17 @@ instruction, then sound.
       persists the choice in NVS and resets. All 44 discs are on the board.
 - [ ] `.ssd`/`.dsd` on the SD card over SDMMC, through a small sector cache
       in PSRAM.
-- [ ] SN76489 at 4 MHz input clock, generated per emulated cycle slice,
-      resampled to the ES8311 over I2S through a ring buffer. Audio is
-      produced in lockstep with emulation so it never drifts from video.
+- [x] SN76489 (`main/sn76489.c`, beebjit's model): the bytes the system
+      VIA lands on it go to a queue with their cycle; a task on core 0
+      renders the chip 4 ms behind the machine at its own 250 kHz step rate,
+      averages eight steps per 31250 Hz sample, blocks DC and writes the
+      ES8311 over I2S (`main/sound_esp.c`, esp_codec_dev). The boot beep
+      and a demo's tune come out right on the host (`host/sound.exe` writes
+      a WAV and reports per half second); nobody has listened on the board
+      yet. `beeb.py COM3 vol 50` sets and keeps the volume.
+- [ ] The chip's 8 us write cycle (beebjit's synchronous mode): bytes are
+      taken as they land, which a sample player writing the volume
+      thousands of times a second may not survive.
 
 ## Phase 5: front end
 

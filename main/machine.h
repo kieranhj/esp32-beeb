@@ -63,6 +63,7 @@ struct machine {
     uint8_t *display_base;
 
     uint8_t romsel, acccon, ic32;
+    uint8_t sound_we, sound_bus;   // the sound chip's write enable (IC32 bit 0 low) and the byte it last took
 
     struct via sysvia, usrvia;
 

@@ -253,6 +253,25 @@ static void remap_all(struct machine *m)
 
 // ---- system VIA peripherals: keyboard, IC32 latch, CMOS, sound -------------
 
+// A byte landing on the SN76489 (the platform renders it; see sn76489.h).
+#ifndef MACHINE_SOUND_WRITE
+#define MACHINE_SOUND_WRITE(m, byte) ((void)0)
+#endif
+
+// The chip takes the port A bus value when its write enable (IC32 bit 0,
+// active low) goes low, and again whenever the bus changes while it is low.
+static void sound_bus_changed(struct machine *m, int we_edge)
+{
+    uint8_t bus = m->sysvia.bus_a;
+    if (!m->sound_we) {
+        return;
+    }
+    if (we_edge || bus != m->sound_bus) {
+        m->sound_bus = bus;
+        MACHINE_SOUND_WRITE(m, bus);
+    }
+}
+
 static int key_down(const struct machine *m, int row, int col)
 {
     return (m->keys[col & 0xf] >> (row & 7)) & 1;
@@ -310,6 +329,7 @@ static void sysvia_port_a(struct machine *m)
     via->peripheral_a = periph;
     via_update_bus_a(via);
     via_set_ca2(via, fire);
+    sound_bus_changed(m, 0);
 }
 
 static void sysvia_port_b(struct machine *m)
@@ -321,6 +341,13 @@ static void sysvia_port_b(struct machine *m)
         m->ic32 |= bit;
     } else {
         m->ic32 &= ~bit;
+    }
+    {
+        uint8_t we = !(m->ic32 & 1);
+        if (we != m->sound_we) {
+            m->sound_we = we;
+            sound_bus_changed(m, 1);
+        }
     }
     // IC32 bits 4,5: hardware scroll wrap size (beebjit's table).
     {

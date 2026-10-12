@@ -588,3 +588,36 @@ applied to the core's state) has not been looked at since Phase 1 and
 is the next thing to measure. The core 0 limit is mode 7: 229 clocks a
 character word with the panel path, and a full screen of it is a
 million words a second.
+
+## 2026-10-12: sound, asynchronously for now
+
+The SN76489 is beebjit's model restated (`main/sn76489.c`): registers,
+the tone counters stepping at 250 kHz and underflowing from 0 to 0x3ff,
+the noise register updated every second expiry with half periods, the
+power-on state (full volume, lowest tone, noise frequency 2), 2 dB a
+volume step with silence at zero. Its output is unipolar, so a one-pole
+DC blocker sits before the speaker.
+
+What is not beebjit's is the write timing. beebjit's synchronous mode
+models the chip's 8 us write cycle against the 1 MHz bus (a transparent
+address latch open for 2 us, the register latch for the next 2 us, a
+byte missed if the write enable meets a positive 250 kHz edge exactly).
+Here a byte is taken when the system VIA's IC32 bit 0 goes low with it
+on port A, or when port A changes while it is low: the MOS and most
+music players are fine with that, a sample player hammering the volume
+register may not be. The hook is in the machine (`MACHINE_SOUND_WRITE`),
+the platform renders.
+
+On the board the bytes go to a lock-free queue with their cycle, and a
+task on core 0 renders the chip 4 ms behind the machine's cycle count,
+8192 cycles at a time, applying the queued bytes at their cycles: 128
+samples at 31250 Hz (eight 250 kHz steps averaged: the chip's step rate
+divided by eight, so no resampling), written to the ES8311 through
+esp_codec_dev over I2S (pins from the Waveshare BSP: MCLK 16, BCLK 9,
+WS 45, data 8, amplifier enable 46); the codec write blocks when the
+DMA buffers are full and that paces the task. When the machine falls
+behind real time the audio waits with it. The host harness
+(`host/sound.exe`) writes the same samples to a WAV: the boot beep
+(27 bytes, 523 Hz for 0.28 s after the power-on blast) and patarty's
+tune come out as expected. Nobody has listened on the board yet; the
+codec opens and the samples flow.

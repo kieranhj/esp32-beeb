@@ -54,6 +54,13 @@ TRACE_DEBUG=1 host/trace.exe roms/mos3.20 2000000 2>&1 >/dev/null | head   # VIA
 wall time and the trace is irreproducible. beebjit's debugger `eval` of VIA
 registers (`sysvia_r[n]`) returns stale timer values; use the trace instead.
 
+Sound on the host: `zig cc -O2 -std=c11 -o host/sound.exe host/sound.c`,
+then `host/sound.exe roms/mos3.20 4000000 out/boot.wav` (the boot beep) or
+with `--disc x.ssd --autoboot`; it writes a 31250 Hz WAV from the SN76489
+model and prints the bytes landed, the peak and, per half second, the RMS
+and a zero-crossing frequency, so a result reads without listening.
+`SOUND_DEBUG=1` prints every byte with the chip's registers after it.
+
 Frame diffs (pixels against beebjit's canvas):
 
 ```sh

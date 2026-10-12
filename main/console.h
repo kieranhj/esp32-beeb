@@ -9,5 +9,7 @@ void console_start(void);
 // The disc chosen at the console, persisted in NVS (key "disc"); an empty
 // string when none has been chosen. `out` holds at least 32 bytes.
 void console_get_disc(char *out, unsigned len);
+// The speaker volume chosen at the console (NVS key "vol"), 0 to 100.
+int console_get_volume(void);
 
 #endif

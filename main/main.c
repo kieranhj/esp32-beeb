@@ -29,6 +29,7 @@
 #include "video_esp.h"
 #include "bundle.h"
 #include "console.h"
+#include "sound_esp.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "beeb";
@@ -240,6 +241,7 @@ static void beeb_task(void *arg)
             uint64_t before = m->cpu.cycles;
             uint32_t c0 = esp_cpu_get_cycle_count();
             machine_run(m, target);
+            sound_machine_cycle = (uint32_t)m->cpu.cycles;
             clk += (uint32_t)(esp_cpu_get_cycle_count() - c0);
             cyc += m->cpu.cycles - before;
             slices++;
@@ -293,6 +295,12 @@ static void beeb_task(void *arg)
             m->crtc.stat_clk_fast = m->crtc.stat_clk_slow = m->crtc.stat_clk_plan = 0;
             memset(m->stat_clk_sheila, 0, sizeof m->stat_clk_sheila);
             memset(m->stat_io_page, 0, sizeof m->stat_io_page);
+            {
+                uint32_t sw, ss, sd, st;
+                sound_stats(&sw, &ss, &sd, &st);
+                printf("SOUND bytes %lu samples %lu dropped %lu starved %lu\n",
+                       (unsigned long)sw, (unsigned long)ss, (unsigned long)sd, (unsigned long)st);
+            }
             printf("PANEL rows %lu (%lu us) band wait %lu us flush %lu us  seeks back %lu skip %lu\n",
                    (unsigned long)video_rows, (unsigned long)(video_clk_rows / 240),
                    (unsigned long)(video_clk_start / 240), (unsigned long)(video_clk_flush / 240),
@@ -360,6 +368,9 @@ void app_main(void)
     }
     bundle_open();
     console_start();
+    if (sound_init(i2c, console_get_volume()) != ESP_OK) {
+        ESP_LOGW(TAG, "no sound");
+    }
 
     memset(&stream, 0, sizeof stream);
     video_start(&stream);
