@@ -131,7 +131,9 @@ partition (0x310000; do this once, it survives app flashes). Then
 bs-twisted.ssd`: the console task (`main/console.c`, reading the USB
 serial port directly) stores the choice in NVS and resets; the board
 autoboots that disc from then on, or the bundle's first if none is
-chosen. Without a bundle it falls back to the one disc embedded in the
+chosen. Discs with a prompt get keys typed after boot's
+(`s_boot_keys` in `main/main.c`: bs-twisted presses 1, REAL HARDWARE, at
+cycle 12 M, as the `twisted_hw` frame cases). Without a bundle it falls back to the one disc embedded in the
 image: `idf.py "-DBEEB_DISC=x.ssd" build` (quote it: PowerShell splits an
 unquoted `-D` value at the dot and CMake then wipes its cache; the choice
 sticks in `build/CMakeCache.txt`, default `crtc-tmoyos.ssd`).

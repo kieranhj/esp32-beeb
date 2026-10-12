@@ -70,7 +70,7 @@ struct machine {
     // Keyboard matrix: bit (row) set in keys[col] when the key is down.
     uint8_t keys[16];
     // Scheduled key events, applied by the catch-up at their exact cycle
-    // (in order of cycle). machine_queue_key() adds; a 32-bit cycle count.
+    // (in order of cycle). machine_queue_key() inserts; a 32-bit cycle count.
     struct machine_key_event { uint32_t cycle; uint8_t row, col, down; } key_events[256];
     uint16_t key_head, key_count;
 
@@ -122,8 +122,9 @@ void machine_set_disc(struct machine *m, int drive, struct disc *d);
 // Holds shift from power on and releases it at cycle 3000000, as beebjit's
 // -autoboot does, so a disc's !BOOT runs.
 void machine_autoboot(struct machine *m);
-// Schedules a key change for an exact cycle count (events must be queued in
-// cycle order). Returns 0 if the queue is full.
+// Schedules a key change for an exact cycle count, kept in cycle order (one
+// queued for a cycle already past is never applied). Returns 0 if the
+// queue is full.
 int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int down);
 
 #endif

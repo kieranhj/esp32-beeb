@@ -14,6 +14,7 @@
 #define MACHINE_STATS 1
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "driver/i2c_master.h"
 #include "esp_attr.h"
@@ -122,6 +123,14 @@ static uint32_t type_text(struct machine *m, const char *text, uint32_t cycle,
     return cycle;
 }
 
+// Keys typed at a disc's prompt after it boots. bs-twisted's loader asks
+// "0. EMULATOR (default)" or "1. REAL HARDWARE" and waits 20 s; the
+// hardware version is the one this machine renders right (as the
+// twisted_hw frame cases, which press 1 at the same cycle).
+static const struct { const char *disc; const char *keys; uint32_t cycle; } s_boot_keys[] = {
+    {"bs-twisted.ssd", "1", 12000000},
+};
+
 static void beeb_task(void *arg)
 {
     (void)arg;
@@ -194,6 +203,13 @@ static void beeb_task(void *arg)
             bundle_unmap();   // the pulses are in PSRAM now
             machine_set_disc(m, 0, &disc0);
             machine_autoboot(m);
+            for (size_t i = 0; i < sizeof s_boot_keys / sizeof s_boot_keys[0]; i++) {
+                if (strcasecmp(name, s_boot_keys[i].disc) == 0) {
+                    type_text(m, s_boot_keys[i].keys, s_boot_keys[i].cycle, 160000, 80000);
+                    printf("disc 0: typing \"%s\" at cycle %lu\n", s_boot_keys[i].keys,
+                           (unsigned long)s_boot_keys[i].cycle);
+                }
+            }
             printf("disc 0: %s (%s), %u bytes expanded to pulses in %lld us\n", name, source, (unsigned)size,
                    (long long)(esp_timer_get_time() - t0));
         } else {

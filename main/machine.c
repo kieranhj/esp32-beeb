@@ -1496,10 +1496,17 @@ int machine_queue_key(struct machine *m, uint32_t cycle, int row, int col, int d
     if (m->key_head == m->key_count) {
         m->key_head = m->key_count = 0;   // drained: start again (live input)
     }
-    if (m->key_count >= 512) {
+    if (m->key_count >= sizeof m->key_events / sizeof m->key_events[0]) {
         return 0;
     }
-    struct machine_key_event *e = &m->key_events[m->key_count++];
+    // In cycle order, after any at the same cycle: a key scheduled ahead
+    // (a disc's boot key) must not hold back live input queued after it.
+    uint32_t i = m->key_count++;
+    while (i > m->key_head && (int32_t)(m->key_events[i - 1].cycle - cycle) > 0) {
+        m->key_events[i] = m->key_events[i - 1];
+        i--;
+    }
+    struct machine_key_event *e = &m->key_events[i];
     e->cycle = cycle;
     e->row = (uint8_t)row;
     e->col = (uint8_t)col;
