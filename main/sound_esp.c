@@ -24,7 +24,11 @@
 
 static const char *TAG = "sound";
 
-#define SOUND_RATE 31250
+// 32 kHz: the ES8311 driver's clock table has no 31250 Hz entry (the chip's
+// 250 kHz step rate / 8), and with no entry the codec's clocks are left
+// unset and it plays nothing. 250 chip steps make 32 output samples: each
+// sample averages 7 or 8 steps.
+#define SOUND_RATE 32000
 #define SOUND_LAG 8000          // cycles behind the machine (4 ms)
 #define SOUND_CHUNK 8192        // cycles rendered per step (128 samples)
 
@@ -89,6 +93,7 @@ static void render_to(uint32_t cycle, int16_t *out, uint32_t *count)
 {
     static int16_t steps[8];
     static uint32_t nsteps;
+    static uint32_t need = 8, acc;   // steps for the current sample (7 or 8)
     while ((int32_t)(cycle - s_rendered) > 0) {
         uint32_t until = cycle;
         // The next queued byte lands before `until`: render up to it first.
@@ -112,36 +117,40 @@ static void render_to(uint32_t cycle, int16_t *out, uint32_t *count)
         s_rendered = until;
         while (whole) {
             int32_t sum;
-            if (nsteps == 0 && whole >= 8) {
+            if (nsteps == 0 && need == 8 && whole >= 8) {
                 // A whole output sample: eight steps at once (host/sntest.c
                 // checks it equals eight single steps summed).
                 sum = sn_render8(&s_sn);
                 whole -= 8;
             } else {
-                uint32_t k = 8 - nsteps;
+                uint32_t k = need - nsteps;
                 if (k > whole) {
                     k = whole;
                 }
                 sn_render(&s_sn, steps + nsteps, k);
                 nsteps += k;
                 whole -= k;
-                if (nsteps != 8) {
+                if (nsteps != need) {
                     continue;
                 }
                 sum = 0;
-                for (int i = 0; i < 8; i++) {
+                for (uint32_t i = 0; i < need; i++) {
                     sum += steps[i];
                 }
             }
             {
                 // The chip's output is unipolar (0 to full scale); a DC
                 // blocker (one pole, about 25 Hz) keeps it off the speaker.
-                int32_t x = sum / 8;
+                int32_t x = sum / (int32_t)need;
                 int32_t y = x - s_dc_x + (s_dc_y * 1015) / 1024;
                 s_dc_x = x;
                 s_dc_y = y;
                 out[(*count)++] = (int16_t)(y > 32767 ? 32767 : y < -32768 ? -32768 : y);
                 nsteps = 0;
+                // The next sample's share of the 250 steps per 32 samples.
+                acc += 250;
+                need = acc / 32;
+                acc %= 32;
             }
         }
     }
