@@ -50,6 +50,13 @@ struct render {
     int table_mode[2];
     render_px table_2mhz[256][8] __attribute__((aligned(4)));
     render_px table_1mhz[256][16] __attribute__((aligned(4)));
+    // Which logical colours each byte's pixels use in the built table, so
+    // a palette write rebuilds only the entries it changes.
+    uint16_t byte_logicals[2][256];
+    uint16_t palette_dirty;           // logical colours written since the tables were fixed up
+    // The logical colour of each pixel of a byte (4 bits each, pixel 0 in
+    // the low nibble), per table, for the lane-wise fix-up on the board.
+    uint32_t packed_idx[2][256];
     render_px black[8] __attribute__((aligned(4)));
     const render_px (*cur_2mhz)[8];
     const render_px (*cur_1mhz)[16];
@@ -78,6 +85,8 @@ struct render {
     int compat_clear;
     int framing_changed;
     uint32_t stat_fast_words, stat_slow_words;   // render_consume_n paths taken
+    uint32_t stat_tables, stat_ulactrl, stat_ulapal, stat_events;   // rebuilds and events seen
+    uint32_t stat_clk_tables, stat_clk_slow, stat_clk_runs;         // RENDER_CYCLES() in each
 };
 
 void render_init(struct render *r, render_px *buffer);

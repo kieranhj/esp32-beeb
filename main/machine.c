@@ -856,16 +856,17 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
 INLINE void machine_io_apply(struct cpu6502 *cpu, uint32_t r)
 {
     struct machine *m = cpu->m;
-    cpu->cyc += (r >> 12) & 0xf;
+    uint32_t k = (r >> 12) & 0xf;
+    cpu->cyc += k;
     // The slow path counts the access cycle itself; the stretch beyond a
     // 2 MHz access is one less (see the NMI poll in cpu6502.c).
-    cpu->stretch += ((r >> 12) & 0xf) - 1;
+    cpu->stretch += k - 1;
     cpu->irq_hist = (cpu->irq_hist << ((r >> 16) & 0xff)) | (r & 0xfff);
     cpu->irq_line = r & 1;
-    cpu->sync_due = m->sync_due;
+    cpu->sync_due = m->sync_due;   // an NMI edge makes this the next boundary
     cpu->last_sync = cpu->cyc;
-    cpu->wlo = ((struct machine *)cpu->m)->wlo;
-    cpu->whi = ((struct machine *)cpu->m)->whi;
+    cpu->wlo = m->wlo;
+    cpu->whi = m->whi;
 }
 
 INLINE uint8_t machine_io_rd(struct cpu6502 *cpu, uint16_t addr)

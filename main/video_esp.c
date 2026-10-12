@@ -17,8 +17,12 @@
 // output going to the scaler below instead of a canvas.
 #define RENDER_INDEXED 1
 #define RENDER_FN IRAM_ATTR
+// The glyph sets (11 KB) live in PSRAM: two byte reads per character per
+// raster go through the cache; internal RAM is the scarce thing.
+#define TELETEXT_DATA_ATTR EXT_RAM_BSS_ATTR
 #define RENDER_EMIT(r, first, count, vert) video_emit(r, first, count, vert)
 #define RENDER_FRAME_HOOK(r) video_frame_done()
+#define RENDER_CYCLES() esp_cpu_get_cycle_count()
 #define RENDER_LINE2_WANTED(r) video_line2_wanted(r)
 struct render;
 static int video_line2_wanted(const struct render *r);
@@ -329,6 +333,29 @@ static void video_bench(struct vstream *vs, const char *when, int mode7)
     vs->head = vs->tail = 0;
     // Hand the band buffer back: the render task acquires its own.
     flush_band();
+}
+
+void video_path_stats(uint32_t *fast, uint32_t *slow)
+{
+    *fast = s_render.stat_fast_words;
+    *slow = s_render.stat_slow_words;
+    s_render.stat_fast_words = s_render.stat_slow_words = 0;
+}
+
+void video_event_stats(uint32_t *tables, uint32_t *ulactrl, uint32_t *ulapal, uint32_t *events)
+{
+    *tables = s_render.stat_tables;
+    *ulactrl = s_render.stat_ulactrl;
+    *ulapal = s_render.stat_ulapal;
+    *events = s_render.stat_events;
+    s_render.stat_tables = s_render.stat_ulactrl = s_render.stat_ulapal = s_render.stat_events = 0;
+}
+
+void video_clk_stats(uint32_t *tables, uint32_t *slow)
+{
+    *tables = s_render.stat_clk_tables;
+    *slow = s_render.stat_clk_slow;
+    s_render.stat_clk_tables = s_render.stat_clk_slow = 0;
 }
 
 void video_start(struct vstream *vs)

@@ -46,3 +46,6 @@ CONFIG_SPI_FLASH_ROM_IMPL=y
 
 # The render task on core 0 may run flat out when behind.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+
+# EXT_RAM_BSS_ATTR data (the teletext glyph sets) goes to PSRAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y

@@ -15,6 +15,7 @@ idf_component_register(
         "../roms/mos3.20/adfs.rom"
         "../roms/mos3.20/view.rom"
         "../roms/mos3.20/terminal.rom"
+        "../discs/crtc-tmoyos.ssd"
 )
 
 # The emulator's inner loops are integer code with no aliasing to worry about;

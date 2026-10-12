@@ -32,5 +32,9 @@ extern volatile uint32_t video_clk_rows, video_clk_start, video_clk_flush, video
 // Measurement only: 0 normal; 1 render but send nothing to the panel;
 // 2 discard the stream without rendering.
 extern volatile int video_test_mode;
+// Renderer path counts since the last call (fast run words, slow words).
+void video_path_stats(uint32_t *fast, uint32_t *slow);
+void video_event_stats(uint32_t *tables, uint32_t *ulactrl, uint32_t *ulapal, uint32_t *events);
+void video_clk_stats(uint32_t *tables, uint32_t *slow);   // cycles spent, since last call
 
 #endif

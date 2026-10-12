@@ -7,8 +7,9 @@
 // cycle with the renderer busy, how far behind real time the machine got,
 // frames and bands presented, renderer load.
 //
-// With no keyboard yet, a short BASIC program is typed in through the
-// keyboard matrix after boot so there is something moving to look at.
+// Until the disc bundle partition exists, one disc image is embedded in
+// the firmware, expanded into PSRAM and autobooted (shift held from power
+// on). With BEEB_TYPE_DEMO a short BASIC program is typed in instead.
 
 #define MACHINE_STATS 1
 #include <stdio.h>
@@ -40,6 +41,9 @@ static const char *TAG = "beeb";
 #define ROM(sym) \
     extern const uint8_t sym##_start[] asm("_binary_" #sym "_rom_start");
 ROM(mos) ROM(dfs) ROM(viewsht) ROM(edit) ROM(basic4) ROM(adfs) ROM(view) ROM(terminal)
+extern const uint8_t disc0_start[] asm("_binary_crtc_tmoyos_ssd_start");
+extern const uint8_t disc0_end[] asm("_binary_crtc_tmoyos_ssd_end");
+static struct disc disc0;
 
 // Everything the emulation touches per cycle lives in internal SRAM.
 static DRAM_ATTR struct machine machine;
@@ -140,10 +144,30 @@ static void beeb_task(void *arg)
     uint32_t t = 10000000;   // 5 s after power on
 #endif
 
+#ifdef BEEB_TYPE_DEMO
     // A mode 2 line drawer that runs forever, typed at the prompt.
     t = type_text(m, "MODE 2\n", t, 160000, 80000);
     t = type_text(m, "REPEAT:GCOL 0,RND(8):MOVE RND(1280),RND(1024):DRAW RND(1280),RND(1024):UNTIL 0\n",
                   t, 160000, 80000);
+#else
+    (void)t;
+    // The embedded disc: pulses in PSRAM (1 MB a side), read only.
+    {
+        uint32_t size = (uint32_t)(disc0_end - disc0_start);
+        uint32_t *pulses = heap_caps_malloc(DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+        if (pulses) {
+            int64_t t0 = esp_timer_get_time();
+            disc_init(&disc0, pulses, 1, 0);
+            disc_load_ssd(&disc0, disc0_start, size);
+            machine_set_disc(m, 0, &disc0);
+            machine_autoboot(m);
+            printf("disc 0: %u bytes expanded to pulses in %lld us\n", (unsigned)size,
+                   (long long)(esp_timer_get_time() - t0));
+        } else {
+            printf("disc 0: no PSRAM for the pulses\n");
+        }
+    }
+#endif
 
     printf("BEEB begin on core %d, machine %u bytes, stream %u bytes, internal heap free %u\n",
            xPortGetCoreID(), (unsigned)sizeof machine, (unsigned)sizeof stream,
@@ -182,6 +206,22 @@ static void beeb_task(void *arg)
         if (now >= next_report) {
             next_report += STATS_PERIOD_US;
             uint32_t words = video_words;
+            uint32_t rfast, rslow, rtables, rctrl, rpal, revents;
+            video_path_stats(&rfast, &rslow);
+            video_event_stats(&rtables, &rctrl, &rpal, &revents);
+            uint32_t ctab, cslow;
+            video_clk_stats(&ctab, &cslow);
+            printf("VIDEO events %lu ulactrl %lu ulapal %lu table rebuilds %lu (%lu us) slow words %lu us\n",
+                   (unsigned long)revents, (unsigned long)rctrl, (unsigned long)rpal, (unsigned long)rtables,
+                   (unsigned long)(ctab / 240), (unsigned long)(cslow / 240));
+            printf("MACH crtc fast %lu slow %lu  syncs boundary %lu write %lu io %lu calls %lu chunks %lu  render fast %lu slow %lu\n",
+                   (unsigned long)m->crtc.stat_fast, (unsigned long)m->crtc.stat_slow,
+                   (unsigned long)m->stat_sync_boundary, (unsigned long)m->stat_sync_write,
+                   (unsigned long)m->stat_sync_io, (unsigned long)m->stat_calls, (unsigned long)m->stat_chunks,
+                   (unsigned long)rfast, (unsigned long)rslow);
+            m->crtc.stat_fast = m->crtc.stat_slow = 0;
+            m->stat_sync_boundary = m->stat_sync_write = m->stat_sync_io = 0;
+            m->stat_calls = m->stat_chunks = 0;
             printf("PANEL rows %lu (%lu us) band wait %lu us flush %lu us\n",
                    (unsigned long)video_rows, (unsigned long)(video_clk_rows / 240),
                    (unsigned long)(video_clk_start / 240), (unsigned long)(video_clk_flush / 240));
