@@ -135,6 +135,11 @@ DISC_TESTS = {
     "infinity": ("crtc-mode-infinity.ssd", 12000000),
     "nasty": ("crtc-somenastyeffects.ssd", 12000000),
     "sugarsmash": ("crtc-sugarsmash.ssd", 12000000),
+    # Twisted Brain: the twister (palette x4 and R12/R13 every scanline)
+    # and the ending. (At 200 M, the effect that races the beam, 3464
+    # pixels still differ: see PLAN.md.)
+    "twisted": ("bs-twisted.ssd", 100000000),
+    "twisted3": ("bs-twisted.ssd", 300000000),
 }
 
 

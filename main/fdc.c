@@ -1102,9 +1102,8 @@ static void drive_tick(struct fdc *f, struct fdc_drive *d, uint32_t now)
     }
 
     // The callback may have moved the head (a seek) or stopped the motor.
-    if (!d->spinning) {
-        return;
-    }
+    // A stopped drive still moves on by this position, as beebjit's does:
+    // where it restarts depends on it.
     head = d->head_position;
     pulse_pos = d->pulse_position;
     uint32_t length = drive_track_length(d);
@@ -1125,8 +1124,10 @@ static void drive_tick(struct fdc *f, struct fdc_drive *d, uint32_t now)
     }
     d->head_position = head;
     d->pulse_position = pulse_pos;
-    d->timer = next_ticks - this_ticks;   // from this firing, so the phase holds
-    d->timer_seq = ++f->seq;
+    if (d->spinning) {
+        d->timer = next_ticks - this_ticks;   // from this firing, so the phase holds
+        d->timer_seq = ++f->seq;
+    }
 }
 
 // Runs once per machine chunk: hot, unlike the rest of this file.

@@ -785,14 +785,20 @@ static uint8_t acia_status(const struct machine *m)
     return st;
 }
 
+// A 1 MHz read happens here one cycle before beebjit's (mid cycle, where
+// beebjit reads at the end of the stretch), and beebjit fires a timer due
+// on its read's tick before the read: a conversion ending on the next
+// cycle has ended as far as the read is concerned. (Twisted Brain polls
+// the status exactly 20000 cycles after starting a conversion.)
 static uint8_t adc_status(const struct machine *m)
 {
+    int busy = m->adc_busy && m->adc_countdown > 1;
     uint8_t st = m->adc_ctrl & 0x0f;  // channel, input flag, 12-bit mode
     st |= 0x20;                         // MSB of the 0x8000 centre value
-    if (!m->adc_busy) {
+    if (!busy) {
         st |= 0x40;
     }
-    if (!m->adc_ready) {
+    if (!m->adc_ready && busy) {
         st |= 0x80;
     }
     return st;
@@ -1208,6 +1214,30 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
     if ((addr & 0xff00) != 0xfe00) {
         IO_SYNC_IDLE();
         IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening
+    } else if ((addr & 0xfff9) == 0xfe01) {
+        // A CRTC register: beebjit ticks to the end of the stretched cycle
+        // and then writes ("required for CRTC"), one tick later than the
+        // other 1 MHz devices here, which matters when the write lands on
+        // a counter hit (Twisted Brain rewrites R8 on a line end).
+        int keep = io_write_keeps_schedule(m, addr);
+        uint32_t t_ = (((cyc + 1) & 1) ? 1 : 2) + 1;
+        if (keep && io_quiet_window(m, cyc + t_, &mask, &n)) {
+            machine_crtc_catch_up(m);
+            cyc += t_;
+            k += t_;
+        } else {
+            IO_SYNC_IDLE();
+            IO_TICK();
+            keep = 0;   // IO_TICK scheduled; the write may move the schedule
+        }
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
+        if (IO_LEVEL_MOVED()) {
+            m->irq_late = 1;   // R7/R8 can move vsync at once
+            machine_schedule(m);
+        } else if (!keep) {
+            machine_schedule(m);
+        }
     } else if (is_1mhz(addr)) {
         int keep = io_write_keeps_schedule(m, addr);
         uint32_t t_ = ((cyc + 1) & 1) ? 1 : 2;
@@ -1258,16 +1288,8 @@ static inline __attribute__((always_inline)) uint8_t machine_io_rd(struct cpu650
 static inline __attribute__((always_inline)) void machine_io_wr(struct cpu6502 *cpu, uint16_t addr, uint8_t val);
 
 #define CPU6502_SYNC(cpu) machine_cpu_sync(cpu)
-#ifdef MACHINE_STATS
-static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
-{
-    ((struct machine *)cpu->m)->stat_sync_write++;
-    machine_cpu_sync(cpu);
-}
+static void machine_cpu_sync_write(struct cpu6502 *cpu);
 #define CPU6502_SYNC_WRITE(cpu) machine_cpu_sync_write(cpu)
-#else
-#define CPU6502_SYNC_WRITE(cpu) machine_cpu_sync(cpu)
-#endif
 #define CPU6502_IO_RD(cpu, addr) machine_io_rd(cpu, addr)
 #define CPU6502_IO_WR(cpu, addr, v) machine_io_wr(cpu, addr, v)
 #define CPU6502_CODE_ATTR MACHINE_CODE_ATTR
@@ -1277,7 +1299,32 @@ static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
 // Out of line: it runs at events, not per instruction, and the core's
 // loop head (which the compiler copies into every opcode's tail) must stay
 // small. The NMI edge from any source is handed to the core here.
+static MACHINE_NOINLINE void machine_cpu_sync_to(struct cpu6502 *cpu, uint32_t to);
 static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
+{
+    machine_cpu_sync_to(cpu, cpu->cyc);
+}
+
+// A write to display RAM the CRTC may fetch (see wr_cycle in cpu6502.c):
+// the machine up to the end of the last storing instruction, or, if it is
+// already past that, the CRTC alone if it was left behind; then the store.
+static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
+{
+    struct machine *m = cpu->m;
+    STAT(m->stat_sync_write);
+    uint32_t to = cpu->last_wr;
+    if ((int32_t)(to - m->synced) > 0) {
+        machine_cpu_sync_to(cpu, to);
+    } else if ((int32_t)(to - m->crtc_synced) > 0) {
+        while (m->crtc_synced != to) {
+            m->crtc_synced += crtc_run(&m->crtc, m->crtc_synced, to - m->crtc_synced);
+        }
+    }
+}
+
+// Brings the machine up to `to` (at most the core's count) and hands the
+// core its IRQ level, NMI edge and next sync point.
+static MACHINE_NOINLINE void machine_cpu_sync_to(struct cpu6502 *cpu, uint32_t to)
 {
     struct machine *m = cpu->m;
     STAT(m->stat_sync_boundary);
@@ -1288,7 +1335,7 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
         cpu6502_set_sync_due(cpu, cpu->cyc + 1000000);  // measurement: core alone
         return;
     }
-    uint32_t r = machine_sync(m, cpu->cyc);
+    uint32_t r = machine_sync(m, to);
     cpu->irq_hist = (cpu->irq_hist << (r >> 16)) | (r & 0xffff);
     cpu->irq_line = r & 1;
     if (m->nmi_edge) {
@@ -1297,7 +1344,7 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
         cpu->nmi_cycle = m->nmi_cycle;
     }
     cpu6502_set_sync_due(cpu, m->sync_due);
-    cpu->last_sync = cpu->cyc;
+    cpu->last_sync = to;
     cpu->wlo = m->wlo;
     cpu->whi = m->whi;
 #ifdef MACHINE_STATS

@@ -84,20 +84,34 @@ INLINE uint8_t rd(struct cpu6502 *cpu, uint16_t addr)
     return CPU6502_IO_RD(cpu, addr);
 }
 
-INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
+// A write cycle. Display RAM the CRTC is about to fetch makes the machine
+// catch up first, to the end of the previous storing instruction
+// (CPU6502_SYNC_WRITE, which reads last_wr): beebjit's video catches up
+// after each storing instruction, so the fetches since then see this byte.
+INLINE void wr_cycle(struct cpu6502 *cpu, uint16_t addr, uint8_t v, int data)
 {
     uint8_t *p = cpu->wr_tab[addr >> 8];
     if (__builtin_expect(p != 0, 1)) {
         cycle(cpu);
         if (addr >= cpu->wlo && addr <= cpu->whi) {
-            // Display RAM the CRTC is about to fetch: let it fetch this
-            // cycle before the store.
             CPU6502_SYNC_WRITE(cpu);
         }
         p[addr & 0xff] = v;
+        if (data) {
+            cpu->last_wr = cpu->cyc;
+        }
         return;
     }
     CPU6502_IO_WR(cpu, addr, v);
+    if (data) {
+        cpu->last_wr = cpu->cyc;   // after the access's stretch
+    }
+}
+
+// A store or read-modify-write data cycle (always the instruction's last).
+INLINE void wr(struct cpu6502 *cpu, uint16_t addr, uint8_t v)
+{
+    wr_cycle(cpu, addr, v, 1);
 }
 
 INLINE uint8_t fetch(struct cpu6502 *cpu)
@@ -125,7 +139,7 @@ INLINE void idle(struct cpu6502 *cpu)
 
 INLINE void push(struct cpu6502 *cpu, uint8_t v)
 {
-    wr(cpu, 0x100 | cpu->s, v);
+    wr_cycle(cpu, 0x100 | cpu->s, v, 0);
     cpu->s--;
 }
 
@@ -531,6 +545,7 @@ void CPU6502_FN(cpu6502_reset)(struct cpu6502 *cpu)
     cpu->i_poll = 1;
     cpu->sync_due = 0;
     cpu->last_sync = 0;
+    cpu->last_wr = 0;
     cpu->wlo = 0;
     cpu->whi = 0xffff;
     cpu->rd_tab = cpu->rd_tabs[0];

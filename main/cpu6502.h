@@ -56,6 +56,11 @@ struct cpu6502 {
     // display memory the CRTC will fetch before sync_due. The machine sets
     // it; 0..0xFFFF means every RAM write syncs.
     uint16_t wlo, whi;
+    // The cycle count at the end of the last instruction that stored to
+    // memory (a store or read-modify-write: the write is its last cycle;
+    // not the stack). beebjit brings its video up to date after each such
+    // instruction, so a display write is visible to every fetch since.
+    uint32_t last_wr;
     uint32_t cyc;      // running cycle counter used by the hot loop, wraps
     uint64_t cycles;   // total, updated when cpu6502_run returns
     // Memory page tables, see above. rd_tab/wr_tab are the set in use.

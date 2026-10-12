@@ -86,6 +86,29 @@ open(p, 'w', newline=chr(10)).write(s)
 print("disc_drive.c patched: drive log")
 PYEOF
 
+# And BEEBJIT_LOG_FDC=1 prints every control register write: tick count,
+# value, whether a drive is current and spinning, the motor status bit and
+# the current drive's head position, before the write takes effect.
+python -I - "$PATCHED/wd_fdc.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read()
+anchor = '  int is_motor_on = !!(p_fdc->status_register & k_wd_fdc_status_motor_on);'
+assert anchor in s
+add = anchor + chr(10)
+add += '  if (getenv("BEEBJIT_LOG_FDC")) {' + chr(10)
+add += '    fprintf(stderr, "ctrl %llu cpu %llu countdown %lld %02x cur %d spin %d motor %d head %u' + chr(92) + 'n",' + chr(10)
+add += '            (unsigned long long) timing_get_total_timer_ticks(p_fdc->p_timing),' + chr(10)
+add += '            (unsigned long long) state_6502_get_cycles(p_fdc->p_state_6502),' + chr(10)
+add += '            (long long) timing_get_countdown(p_fdc->p_timing), val,' + chr(10)
+add += '            p_current_drive != NULL, p_current_drive ? disc_drive_is_spinning(p_current_drive) : 0,' + chr(10)
+add += '            is_motor_on, p_current_drive ? disc_drive_get_head_position(p_current_drive) : 0);' + chr(10)
+add += '  }'
+s = s.replace(anchor, add, 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("wd_fdc.c patched: control log")
+PYEOF
+
 cat > "$OUT/stub.c" <<'STUB'
 /* beebjit declares this label .globl in asm/x64/asm_inturbo_x64.S but never
  * defines it; GNU as lets that pass, clang's assembler does not. */
