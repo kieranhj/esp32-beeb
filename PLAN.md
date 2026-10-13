@@ -240,7 +240,8 @@ frame cases for the rest of `discs/`.
       page. Tap to highlight, tap again or press BOOT (GPIO 0) to boot;
       swipe along for pages;
       swipe across or PWR to leave. Card discs in green, the current one
-      marked. Seen and used on the board by Kieran: drawing and taps work.
+      marked. Seen and used on the board by Kieran: drawing, taps and BOOT
+      work.
 - [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
       a swipe along the picture moves to the next or previous disc
       (persisted, then reboot), a swipe across opens the menu, a PWR short
