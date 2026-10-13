@@ -239,9 +239,7 @@ frame cases for the rest of `discs/`.
       Beeb's font (the terminal ROM's), one text row per panel band, 19 a
       page. Tap to highlight, tap again to boot; swipe along for pages;
       swipe across or PWR to leave. Card discs in green, the current one
-      marked. Starts and runs on the board; not yet seen or touched (the
-      tap-to-row mapping is reasoned from the panel's rotation, and each
-      tap logs both coordinates to check it).
+      marked. Seen and used on the board by Kieran: drawing and taps work.
 - [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
       a swipe along the picture moves to the next or previous disc
       (persisted, then reboot), a swipe across opens the menu, a PWR short
