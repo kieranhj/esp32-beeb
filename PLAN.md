@@ -249,7 +249,7 @@ frame cases for the rest of `discs/`.
 - [x] Shake for the disc menu (`input.c`, the QMI8658 at 0x6B, 8 g at
       250 Hz): three samples past 2.5 g within 0.6 s. It needs a soft
       reset before setup (FluidBox's sequence); without one every read
-      was zero and shaking did nothing.
+      was zero and shaking did nothing. Shaken by Kieran: it works.
 - [ ] A per-disc key map (only boot keys so far: `s_boot_keys` in
       `main/main.c`).
 - [ ] Per-disc notes file in the bundle: machine quirks, which key the
