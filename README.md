@@ -62,8 +62,9 @@ a battery connector, and a microSD slot.
 | PWR, hold 2 s | Sound off or on |
 | PWR, hold 6 s | Power off (the AXP2101 does this itself) |
 
-In the disc menu: tap a disc to highlight it, tap it again to boot it, swipe
-along the long side to change page, and swipe across or press PWR to leave.
+In the disc menu: tap a disc to highlight it, then tap it again or press the
+BOOT button to boot it. Swipe along the long side to change page, and swipe
+across or press PWR to leave.
 Discs from the SD card are shown in green, and the current disc is marked
 with `>`.
 

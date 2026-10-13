@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include "catalog.h"
 #include "console.h"
 #include "sound_esp.h"
@@ -25,6 +26,7 @@ static const char *TAG = "input";
 #define SWIPE_PX 60
 #define SHORT_PRESS_MAX_MS 1500    // released before this: restart
 #define MUTE_PRESS_MS 2000         // held this long: sound off/on (6 s is the power chip's power-off)
+#define BOOT_GPIO GPIO_NUM_0      // the BOOT button pulls it low; in the menu it boots the highlighted disc
 // A shake opens the disc menu: three samples past 2.5 g within 0.6 s.
 // A tap or a knock is one spike; carrying the board is well under 2 g.
 #define SHAKE_MPS2 (2.5f * 9.81f)
@@ -174,6 +176,7 @@ static void input_task(void *arg)
     int64_t down_at = 0;
     int long_sent = 0, space_down = 0;
     int button_was = 0, agree = 0, mute_done = 0;
+    int boot_was = 0, boot_agree = 0;
     int64_t button_at = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(POLL_MS));
@@ -272,6 +275,22 @@ static void input_task(void *arg)
             }
         }
 
+        // The BOOT button (GPIO 0), debounced: in the menu, a press boots
+        // the highlighted disc.
+        {
+            int pressed = gpio_get_level(BOOT_GPIO) == 0;
+            if (pressed == boot_was) {
+                boot_agree = 0;
+            } else if (++boot_agree >= 2) {
+                boot_agree = 0;
+                boot_was = pressed;
+                if (pressed && s_menu) {
+                    ESP_LOGI(TAG, "BOOT: select");
+                    post_gesture(INPUT_SELECT, 0, 0);
+                }
+            }
+        }
+
         // The PWR button, debounced: a short press restarts; held for 2 s it
         // toggles the sound at once, so the change is heard while held. The
         // AXP2101 cuts the power itself at 6 s.
@@ -308,6 +327,10 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c)
     if (i2c == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+    const gpio_config_t boot_cfg = {
+        .pin_bit_mask = 1ull << BOOT_GPIO, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&boot_cfg);
     const i2c_device_config_t touch_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = TOUCH_ADDR, .scl_speed_hz = 400000,
     };

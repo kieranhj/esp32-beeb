@@ -24,7 +24,7 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c);
 int input_take_key(int *row, int *col, int *down);
 
 // Menu mode: touches become gestures for the menu instead of keys.
-enum { INPUT_TAP, INPUT_SWIPE_FORWARD, INPUT_SWIPE_BACK, INPUT_SWIPE_ACROSS };
+enum { INPUT_TAP, INPUT_SWIPE_FORWARD, INPUT_SWIPE_BACK, INPUT_SWIPE_ACROSS, INPUT_SELECT };   // SELECT: the BOOT button
 void input_set_menu(int on);
 // The next gesture, if any. A tap's position is in picture coordinates
 // (x along the long side, 0 to 447; y down the short side, 0 to 367).

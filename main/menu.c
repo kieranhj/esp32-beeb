@@ -151,6 +151,10 @@ void menu_run(void)
             ESP_LOGI(TAG, "leave");
             vTaskDelay(pdMS_TO_TICKS(50));
             esp_restart();
+        } else if (kind == INPUT_SELECT) {
+            if (s_highlight >= 0 && s_highlight < n) {
+                boot(s_highlight);
+            }
         } else if (kind == INPUT_TAP) {
             int row = y / DISPLAY_BAND_ROWS;
             int i = row - FIRST_ITEM_ROW;

@@ -237,7 +237,8 @@ frame cases for the rest of `discs/`.
 - [x] Touch menu (`main/menu.c`): a swipe across the picture (or `beeb.py
       COM3 menu`) restarts into it; every bundle and card disc in the
       Beeb's font (the terminal ROM's), one text row per panel band, 19 a
-      page. Tap to highlight, tap again to boot; swipe along for pages;
+      page. Tap to highlight, tap again or press BOOT (GPIO 0) to boot;
+      swipe along for pages;
       swipe across or PWR to leave. Card discs in green, the current one
       marked. Seen and used on the board by Kieran: drawing and taps work.
 - [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
