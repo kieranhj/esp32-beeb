@@ -65,6 +65,30 @@ void console_set_disc(const char *name)
     nvs_close(h);
 }
 
+void console_set_menu(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("beeb", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "menu", 1);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+int console_take_menu(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("beeb", NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_get_u8(h, "menu", &v) == ESP_OK && v) {
+            nvs_set_u8(h, "menu", 0);
+            nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    return v != 0;
+}
+
 static void command(char *line)
 {
     char *sp = strchr(line, ' ');
@@ -77,7 +101,7 @@ static void command(char *line)
         }
     }
     if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
-        printf("console: help | list | boot <disc> | vol <0-100> | reset\n");
+        printf("console: help | list | boot <disc> | menu | vol <0-100> | reset\n");
     } else if (strcmp(line, "list") == 0) {
         char cur[32];
         console_get_disc(cur, sizeof cur);
@@ -101,6 +125,12 @@ static void command(char *line)
         int vol = atoi(arg);
         set_volume(vol);
         printf("console: volume %d\n", vol);
+    } else if (strcmp(line, "menu") == 0) {
+        console_set_menu();
+        printf("console: menu\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
     } else if (strcmp(line, "reset") == 0) {
         printf("console: reset\n");
         fflush(stdout);

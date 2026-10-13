@@ -38,11 +38,12 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
-CONFIG_SPI_FLASH_ROM_IMPL=y
 
 # Internal RAM is the scarce resource (see decisions.md, Phase 3): IDF code
-# that does not need to be in IRAM goes to flash. The emulator never writes
-# flash at run time, so nothing here runs with the cache off.
+# that does not need to be in IRAM goes to flash. NOT the flash driver: with
+# CONFIG_SPI_FLASH_ROM_IMPL every NVS write (console vol/boot, a swipe, the
+# menu) overwrote internal RAM (heap metadata, the UART driver's context)
+# and the board crashed; the IDF driver costs 9 KB of IRAM but writes safely.
 
 # The render task on core 0 may run flat out when behind.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n

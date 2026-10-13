@@ -20,7 +20,8 @@ beebjit's beam model), `main/sn76489.c` (sound chip). Board-only:
 `main/main.c` (tasks, pacing loop, STATS), `machine_esp.c` (placement),
 `video_esp.c` (render task, scaler, band handling), `display.c` (CO5300),
 `sound_esp.c` (ES8311), `input.c` (touch, PWR), `console.c` (serial
-commands), `bundle.c` (disc partition). Host harnesses in `host/`.
+commands), `bundle.c` (disc partition), `sdcard.c` (microSD discs),
+`catalog.c` (bundle and card as one list), `menu.c` (the disc menu). Host harnesses in `host/`.
 
 The user is Kieran, a bitshifters member who wrote several of these demos and
 built the beebjit and b2 libretro cores in `../rg40xxv`. Assume deep BBC Micro
@@ -138,6 +139,10 @@ image: `idf.py "-DBEEB_DISC=x.ssd" build` (quote it: PowerShell splits an
 unquoted `-D` value at the dot and CMake then wipes its cache; the choice
 sticks in `build/CMakeCache.txt`, default `crtc-tmoyos.ssd`).
 `BEEB_TYPE_DEMO` types a BASIC line drawer instead of booting a disc.
+A microSD card adds its `.ssd`/`.dsd` files (root and `/discs`) to the
+list; a card disc with a bundle disc's name replaces it. `beeb.py COM3
+menu` (or a swipe across the picture) restarts into the touch menu;
+opening the serial port resets the board, which leaves it.
 
 Profiling the machine on the board: build with `-DBEEB_PROFILE` and
 `VS_RING=8192` (both in `main/CMakeLists.txt`; the counters cost 13 KB of
@@ -234,6 +239,8 @@ at offset 0. This is a V2 board (CO5300 panel, CST820 touch).
 - IRAM text has a hard limit of about 168 KB (the link fails with
   `dangerous relocation: j: cannot encode: xt_debugexception`). The core is
   100 KB of it; the renderer runs from flash by choice.
+- Keep `CONFIG_SPI_FLASH_ROM_IMPL` off: with the ROM flash driver every
+  NVS write (volume, disc choice, the menu flag) overwrote internal RAM.
 - Do not use `esp_partition_mmap` for the disc bundle: on this build it
   handed out addresses inside the PSRAM heap's range and corrupted it.
   `bundle.c` reads with `esp_partition_read`.

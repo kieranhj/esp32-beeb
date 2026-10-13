@@ -4,6 +4,7 @@
     python tools/beeb.py COM3 list
     python tools/beeb.py COM3 boot bs-twisted.ssd      # persists the choice and resets
     python tools/beeb.py COM3 reset
+    python tools/beeb.py COM3 menu                     # the disc menu on the panel
 
 The board answers on the same port; `boot` and `reset` re-enumerate it, so
 the port is reopened and the boot log captured for a few seconds.
@@ -34,7 +35,7 @@ def main():
             if data:
                 sys.stdout.write(data.decode(errors="replace"))
                 sys.stdout.flush()
-    if line.split()[0] in ("boot", "reset"):
+    if line.split()[0] in ("boot", "reset", "menu"):
         end = time.time() + 12.0
         while time.time() < end:
             try:

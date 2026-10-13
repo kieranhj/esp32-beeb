@@ -13,5 +13,9 @@ void console_get_disc(char *out, unsigned len);
 int console_get_volume(void);
 // Persists a disc choice (the input task's swipes use it too).
 void console_set_disc(const char *name);
+// Asks for the menu on the next boot; console_take_menu() reads and clears
+// that request.
+void console_set_menu(void);
+int console_take_menu(void);
 
 #endif

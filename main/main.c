@@ -34,6 +34,7 @@
 #include "console.h"
 #include "sound_esp.h"
 #include "input.h"
+#include "menu.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "beeb";
@@ -399,6 +400,13 @@ void app_main(void)
     sdcard_open(i2c);   // before input_init, which keeps the expander's directions
     catalog_build();
     console_start();
+    if (console_take_menu()) {
+        // The menu instead of the machine: no sound, no video task, the
+        // panel's band buffers are the menu's.
+        sdcard_close();
+        input_init(i2c);
+        menu_run();
+    }
     if (sound_init(i2c, console_get_volume()) != ESP_OK) {
         ESP_LOGW(TAG, "no sound");
     }

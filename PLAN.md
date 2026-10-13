@@ -229,12 +229,18 @@ frame cases for the rest of `discs/`.
 
 ## Phase 5: front end
 
-- [ ] Touch menu: list embedded discs and SD discs, tap to boot. Autoboot
-      with Shift+BREAK held through reset.
+- [x] Touch menu (`main/menu.c`): a swipe across the picture (or `beeb.py
+      COM3 menu`) restarts into it; every bundle and card disc in the
+      Beeb's font (the terminal ROM's), one text row per panel band, 19 a
+      page. Tap to highlight, tap again to boot; swipe along for pages;
+      swipe across or PWR to leave. Card discs in green, the current one
+      marked. Starts and runs on the board; not yet seen or touched (the
+      tap-to-row mapping is reasoned from the panel's rotation, and each
+      tap logs both coordinates to check it).
 - [x] Input (`main/input.c`): touch holds Space, a long press adds Return,
-      a swipe along the picture moves to the next or previous disc in the
-      bundle (persisted, then reboot), a PWR short press restarts, a 2 s
-      hold turns the sound off or on (not yet tried by hand). Polled at
+      a swipe along the picture moves to the next or previous disc
+      (persisted, then reboot), a swipe across opens the menu, a PWR short
+      press restarts, a 2 s hold turns the sound off or on. Polled at
       50 Hz on core 0, keys handed to the machine through its key queue.
       Tried on the board: taps, swipes and PWR work.
 - [ ] Shake (IMU, code in fluidbox `imu.c`) to reset; a per-disc key map.

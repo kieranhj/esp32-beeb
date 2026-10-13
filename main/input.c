@@ -88,6 +88,43 @@ static void change_disc(int step)
     esp_restart();
 }
 
+// Menu mode's gestures, in a mailbox of their own.
+static volatile int s_menu;
+static struct { uint8_t kind; int16_t x, y; } s_gestures[8];
+static volatile uint32_t s_gesture_head, s_gesture_tail;
+
+void input_set_menu(int on)
+{
+    s_menu = on;
+}
+
+static void post_gesture(int kind, int x, int y)
+{
+    uint32_t h = s_gesture_head;
+    if (h - s_gesture_tail >= 8) {
+        return;
+    }
+    s_gestures[h & 7].kind = (uint8_t)kind;
+    s_gestures[h & 7].x = (int16_t)x;
+    s_gestures[h & 7].y = (int16_t)y;
+    __sync_synchronize();
+    s_gesture_head = h + 1;
+}
+
+int input_take_gesture(int *kind, int *x, int *y)
+{
+    uint32_t t = s_gesture_tail;
+    if (t == s_gesture_head) {
+        return 0;
+    }
+    *kind = s_gestures[t & 7].kind;
+    *x = s_gestures[t & 7].x;
+    *y = s_gestures[t & 7].y;
+    __sync_synchronize();
+    s_gesture_tail = t + 1;
+    return 1;
+}
+
 // One poll of the touch controller: finger down, position.
 static uint32_t s_polls, s_touch_errors, s_touch_down, s_button_errors;
 static uint8_t s_last_touch[7], s_last_button;
@@ -152,10 +189,12 @@ static void input_task(void *arg)
                 y0 = y;
                 down_at = now;
                 long_sent = 0;
-                space_down = 1;
-                post_key(KEY_SPACE_ROW, KEY_SPACE_COL, 1);
+                space_down = !s_menu;
+                if (space_down) {
+                    post_key(KEY_SPACE_ROW, KEY_SPACE_COL, 1);
+                }
             } else if (down && was_down) {
-                if (!long_sent && now - down_at > LONG_PRESS_MS * 1000 && abs(x - x0) < SWIPE_PX && abs(y - y0) < SWIPE_PX) {
+                if (!s_menu && !long_sent && now - down_at > LONG_PRESS_MS * 1000 && abs(x - x0) < SWIPE_PX && abs(y - y0) < SWIPE_PX) {
                     long_sent = 1;
                     post_key(KEY_RETURN_ROW, KEY_RETURN_COL, 1);
                     ESP_LOGI(TAG, "long press: Return");
@@ -169,12 +208,33 @@ static void input_task(void *arg)
                     post_key(KEY_RETURN_ROW, KEY_RETURN_COL, 0);
                 }
                 int dx = x - x0, dy = y - y0;
-                if (now - down_at < 600 * 1000 && abs(dy) > SWIPE_PX && abs(dy) > abs(dx)) {
+                int quick = now - down_at < 600 * 1000;
+                if (quick && abs(dy) > SWIPE_PX && abs(dy) > abs(dx)) {
                     // The panel runs in its native portrait orientation, so
                     // the picture's long side is the touch controller's y.
                     ESP_LOGI(TAG, "swipe %s", dy > 0 ? "forward" : "back");
-                    change_disc(dy > 0 ? 1 : -1);
-                } else if (now - down_at < 600 * 1000) {
+                    if (s_menu) {
+                        post_gesture(dy > 0 ? INPUT_SWIPE_FORWARD : INPUT_SWIPE_BACK, 0, 0);
+                    } else {
+                        change_disc(dy > 0 ? 1 : -1);
+                    }
+                } else if (quick && abs(dx) > SWIPE_PX) {
+                    ESP_LOGI(TAG, "swipe across");
+                    if (s_menu) {
+                        post_gesture(INPUT_SWIPE_ACROSS, 0, 0);
+                    } else {
+                        console_set_menu();
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        esp_restart();
+                    }
+                } else if (s_menu) {
+                    // Picture coordinates: its top is at the panel's
+                    // right-hand native edge (display.h), so its rows run
+                    // against the controller's x.
+                    int px = y0, py = 367 - x0;
+                    ESP_LOGI(TAG, "tap at %d,%d (picture %d,%d)", x0, y0, px, py);
+                    post_gesture(INPUT_TAP, px, py);
+                } else if (quick) {
                     ESP_LOGI(TAG, "tap at %d,%d: Space", x0, y0);
                 }
             }

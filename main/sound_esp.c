@@ -18,6 +18,7 @@
 #include "driver/i2s_std.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "sn76489.h"
@@ -46,7 +47,9 @@ struct sound_event {
     uint8_t byte;
 };
 #define QUEUE_SIZE 1024   // a power of two
-static struct sound_event s_queue[QUEUE_SIZE];
+// In PSRAM: 8 KB of internal RAM is worth more than the cache misses of a
+// few thousand sequential writes a second.
+EXT_RAM_BSS_ATTR static struct sound_event s_queue[QUEUE_SIZE];
 static volatile uint32_t s_qhead, s_qtail;
 
 static struct sn76489 s_sn;

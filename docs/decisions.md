@@ -960,3 +960,20 @@ Matching it means leaving the CRTC behind at every non-video sync, the
 lazy CRTC of the entry above (1-4 clocks on the drawing effects, the
 ending near the budget), to reproduce a granularity of beebjit's rather
 than the hardware. Left as is, noted in PLAN.md.
+
+## 2026-10-13: the ROM flash driver corrupted RAM on every NVS write
+
+The menu clears its NVS flag at boot, and the board crashed right after
+(heap metadata reading 0xaaaaa1ea, the lock of a heap region). Heap
+integrity checks put it inside nvs_set_u8; the same happened at run time
+on a `vol` change (a write that changes the value: the UART driver's
+static context was zeroed and the next printf faulted). Swipes and
+`boot` had escaped notice because they restart straight after writing.
+The cause was CONFIG_SPI_FLASH_ROM_IMPL, set with the other IRAM savings
+in Phase 3 on the assumption that nothing writes flash at run time: with
+the IDF driver instead, four changing volume writes during a demo leave
+the heap intact. It costs 9.4 KB of internal RAM; moving the sound
+chip's byte queue (8 KB, a few thousand sequential writes a second) and
+the menu's text rows to PSRAM won most of it back: internal heap at
+machine start 20727 -> 19871 bytes with SD support and the menu added.
+STATS on twisted unchanged.
