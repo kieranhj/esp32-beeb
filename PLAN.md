@@ -35,7 +35,7 @@ core 0 load), from the STATS line:
 | bs-twisted | 65-117 (the twister 105, the ending 117) | 56-88% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
-| evil-inf (RVI, from 65 s) | 172 (was 242) | 80% |
+| evil-inf (RVI, from 65 s) | 134 (was 242) | 98% |
 
 Every disc in `discs/` except the NuLA ones (out of scope) is pixel
 identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
@@ -190,16 +190,26 @@ frame cases for the rest of `discs/`.
       one, its video only catching up after the store. Matching it means
       leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
       clocks on the drawing effects). See decisions.
-- [ ] evil-inf's RVI part (from about 65 s): 242 -> 172 clocks per cycle,
-      so it runs at 70% speed. Each scanline writes R0=1 at h 0 and R0=95
-      32 ticks later (sixteen two-character lines step the raster), then
-      R9, R12, R13 and the palette. Done: the vsync bound counts rows to
-      R7 instead of stopping at every line end; short lines (R0 < 8)
-      through their own loop. Left, from the profile build (clocks per
-      cycle): short-line ticks 34 (221 a tick: the chain step and the
-      register-starved loop), fast runs 31 (about 250 a run of setup,
-      twelve runs a scanline between the writes), scheduling 17 (400 a
-      call after each write), exact ticks 15, plans 13.
+- [ ] evil-inf's RVI part (from about 65 s): 242 -> 134 clocks per cycle
+      on core 1, and core 0 is now the limit too (98% busy at about 42
+      frames a second, so 85% speed). Each scanline writes R0=1 at h 0
+      and R0=95 32 ticks later (sixteen two-character lines step the
+      raster), then R9, R12, R13 and three or four palette entries. Done
+      (decisions, "RVI"): the vsync bound counts rows to R7; short lines
+      (R0 < 8) through their own loop, hsync included; CRTC register
+      writes through the quiet window and scheduled once. Next on core 1
+      (profile build, clocks per cycle): short-line ticks 42 (200 a tick;
+      three restructurings of that loop measured no better, see
+      decisions), fast runs 20, scheduling 9 (R0 and R9 writes), the
+      palette writes' catch-ups (a queue of timed palette events the
+      CRTC inserts as it runs would save the catch-up and the run split).
+      On core 0: palette events end a span each (about 4 a scanline),
+      row address events 16 a scanline at 89 clocks (9% of core 0),
+      framing events from every R0-R9 write.
+- [ ] t1poll diverges from beebjit at latches 3, 150 and 200 (instruction
+      11568 or 11722, an interrupt taken differently); 10, 31 and 77 are
+      identical. Already so before 2026-10-13's RVI work (checked at
+      ca72230); not looked at yet.
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows

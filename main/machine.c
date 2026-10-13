@@ -88,6 +88,13 @@ INLINE struct machine *crtc_owner(struct crtc *c);
             vh_++; \
         } \
     } while (0)
+// An hsync event from the fast paths, through the run's ring head.
+#define CRTC_RUN_HSYNC(c, width) do { \
+        if (vs_) { \
+            vs_->ring[vh_ & (VS_RING - 1)] = VS_EV(VS_HSYNC, (width)); \
+            vh_++; \
+        } \
+    } while (0)
 // Linear fetch runs: a load and a store per character.
 INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra, uint32_t tick,
                                 const uint8_t **p, uint32_t *stride, uint32_t *chars);
@@ -1118,6 +1125,11 @@ INLINE void io_schedule_quiet(struct machine *m)
         n = r_ >> 16; \
     } while (0)
 #define IO_TICK() do { cyc++; n++; k++; STAT(m->stat_io_ticks); mask = (mask << 1) | (machine_advance(m, cyc) & 1); } while (0)
+// The same tick when the caller schedules after the access anyway.
+#define IO_TICK_NO_DUE() do { \
+        cyc++; n++; k++; STAT(m->stat_io_ticks); \
+        mask = (mask << 1) | (machine_advance_ex(m, cyc, 0, 1) & 1); \
+    } while (0)
 #define IO_LEVEL_MOVED() (m->nmi_edge || machine_irq_level(m) != (mask & 1))
 // The cycle after an access (1 MHz devices, the video ULA).
 #define IO_AFTER_TICK() do { \
@@ -1255,16 +1267,21 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         // and then writes ("required for CRTC"), one tick later than the
         // other 1 MHz devices here, which matters when the write lands on
         // a counter hit (Twisted Brain rewrites R8 on a line end).
+        // Nothing falls due before the access (the quiet window): the VIAs
+        // by subtraction and the CRTC run up to it, whatever the register;
+        // one that moves the schedule reschedules after the write. (R0 and
+        // R9 went through two general catch-ups: RVI writes them three
+        // times a scanline, at about 1100 clocks of machinery each.)
         int keep = io_write_keeps_schedule(m, addr);
         uint32_t t_ = (((cyc + 1) & 1) ? 1 : 2) + 1;
-        if (keep && io_quiet_window(m, cyc + t_, &mask, &n)) {
+        if (io_quiet_window(m, cyc + t_, &mask, &n)) {
             machine_crtc_catch_up(m);
             cyc += t_;
             k += t_;
         } else {
             IO_SYNC_IDLE();
-            IO_TICK();
-            keep = 0;   // IO_TICK scheduled; the write may move the schedule
+            IO_TICK_NO_DUE();   // scheduled once, after the write
+            keep = 0;
         }
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));

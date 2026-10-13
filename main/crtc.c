@@ -597,14 +597,18 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
 #ifndef CRTC_RUN_RA
 #define CRTC_RUN_RA(c, ra, isv) CRTC_RA(c, ra, isv)
 #endif
+#ifndef CRTC_RUN_HSYNC
+#define CRTC_RUN_HSYNC(c, width) CRTC_HSYNC(c, width)
+#endif
 
 // Very short lines at 2 MHz (RVI runs two-character lines for a quarter of
 // each scanline): every tick is within a few of an R0 hit, so the fast
 // path's runs are one tick long and each costs a plan. This steps up to n
 // ticks exactly as crtc_tick does, with the counters in locals, for as
-// long as nothing it leaves out can happen: an hsync (in progress or
-// starting at an R2 hit), cursor activity, a row at R7 or an even-field
-// vsync (the half-R0 check). A plain line end (not the row's last line,
+// long as nothing it leaves out can happen: cursor activity, a row at R7
+// or an even-field vsync (the half-R0 check). (Single exact ticks of
+// longer lines through it cost more than crtc_tick: evil-inf's quiet part
+// 57 -> 60 on the board.) A plain line end (not the row's last line,
 // no vsync, adjust or frame end pending) is done here, crtc_end_of_line
 // and crtc_line_start_checks inlined and cut to what can happen; any other
 // goes through crtc_end_of_line. Returns the ticks run, 0 if the first
@@ -615,13 +619,14 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
     CRTC_RUN_BEGIN(c);
     for (;;) {
         // State only a line end changes.
-        if (c->in_hsync || c->cursor_skew_counter >= 0 || c->vert_counter == c->reg[CRTC_R7_VSYNC] ||
-            c->is_even_vsync || c->reg[CRTC_R0_HTOTAL] >= CRTC_SHORT_R0 || c->reg[CRTC_R0_HTOTAL] == 0 ||
+        if (c->cursor_skew_counter >= 0 || c->vert_counter == c->reg[CRTC_R7_VSYNC] ||
+            c->is_even_vsync || c->reg[CRTC_R0_HTOTAL] == 0 ||
             (!c->cursor_disabled && c->has_hit_cursor_line_start && !c->has_hit_cursor_line_end)) {
             break;
         }
         uint32_t r0 = c->reg[CRTC_R0_HTOTAL], r1 = c->reg[CRTC_R1_HDISP];
         uint32_t r2 = (c->hsync_width > 0) ? c->reg[CRTC_R2_HSYNC] : 0x100;   // never hit
+        uint32_t in_hsync = c->in_hsync, hsync_count = c->hsync_tick_counter;
         uint32_t hc = c->horiz_counter;
         uint32_t checks = c->start_of_line_state_checks;
         uint32_t r9_hit = c->r9_hit;
@@ -636,9 +641,6 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
         int plain_ok = !c->in_vsync;
         int eol = 0;
         while (i < n) {
-            if (hc == r2) {
-                break;
-            }
             int r0_hit = (hc == r0);
             if (hc == r1) {
                 if (r9_hit) {
@@ -647,6 +649,15 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
                 bits &= ~DISPEN_HORIZ;
             } else if (r0_hit) {
                 bits &= ~DISPEN_HORIZ;
+            }
+            if (in_hsync) {
+                if (--hsync_count == 0) {
+                    in_hsync = 0;
+                }
+            } else if (hc == r2) {
+                hsync_count = c->hsync_width;
+                CRTC_RUN_HSYNC(c, hsync_count);
+                in_hsync = 1;
             }
             pipe = ((pipe << 1) | (bits == DISPEN_ALL)) & 7;
             int dispen = (pipe >> skew) & 1;
@@ -710,6 +721,8 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
         c->horiz_counter = (uint8_t)hc;
         c->start_of_line_state_checks = (uint8_t)checks;
         c->display_enable_bits = (uint8_t)bits;
+        c->in_hsync = (uint8_t)in_hsync;
+        c->hsync_tick_counter = (uint8_t)hsync_count;
         c->dispen_shifts[0] = pipe & 1;
         c->dispen_shifts[1] = (pipe >> 1) & 1;
         c->dispen_shifts[2] = (pipe >> 2) & 1;
@@ -719,8 +732,8 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
         c->data_byte = (uint8_t)data;
         c->data_ma13 = (uint8_t)ma13;
         if (!eol) {
-            if (i < n && hc != r2 && i > 0) {
-                continue;   // stopped for the cursor: re-check
+            if (i < n) {
+                continue;   // stopped for the cursor: the check above ends it
             }
             break;
         }
@@ -755,6 +768,7 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
                 i += done;
 #ifdef MACHINE_STATS
                 c->stat_short += done;
+                c->stat_short_calls++;
                 c->stat_clk_short += CRTC_CYCLES() - p0;
 #endif
                 if (c->vsync_changed) {

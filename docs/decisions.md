@@ -1045,3 +1045,40 @@ frame case, the disc sweep at 30 and 60 M, and Klaus. What is left is in
 PLAN.md; a split of crtc_tick on the board (fetch and render 138
 clocks, chain and half-R0 74, line end 51, line-start checks 123) says
 no one thing is the cost.
+
+## 2026-10-13: RVI, continued: 172 -> 134 on core 1
+
+- Short lines in an hsync. RVI's R2 is 95, the long line's R0, so an
+  hsync starts on its last tick and runs 8 ticks into the short lines,
+  which crtc_short_lines refused: those ticks went one at a time
+  (one-tick fast runs at 292 board clocks, exact ticks at 360). The loop
+  now counts the hsync down and starts one at an R2 hit (its event
+  through the run's ring head, CRTC_RUN_HSYNC). 172 -> 153. Sending every
+  other single exact tick (R0, R1, R2 hits of long lines) through the
+  loop as well cost more than crtc_tick (the demo's quiet part 57 ->
+  60), so it is not done.
+- CRTC register writes. R0 and R9 (three a scanline) went through two
+  general catch-ups and two schedules, about 1100 board clocks of
+  machinery each (palette 345, a select 183). The first schedule was
+  always overwritten (IO_TICK_NO_DUE now), and the quiet window, which
+  palette and R12/R13 writes already used, holds for any register: it
+  needs nothing to fall due before the access, and a write that moves
+  the schedule reschedules after it. Machine catch-ups 42 K -> 3.2 K per
+  M cycles, fast runs 66 K -> 46 K (the two catch-ups split the CRTC's
+  run). 153 -> 134. bs-twisted is unchanged (80-120 across the demo).
+
+Three restructurings of crtc_short_lines measured no better on the board
+and were dropped: a leaner tick (one compare for the next R0/R1/R2 hit,
+the chain as a shift while none of its actions can fire), a whole-line
+block (a line's ticks and plain line end straight, 72% of RVI's short
+ticks; 209 clocks a two-tick line against about 400) and a version of
+it with the row's constants hoisted and the bytes through one fetch
+pointer (143 against 134). Timed on the board: a plain tick 93 clocks, a
+hit tick 116, a plain line end about 200; the fetch is 20 of a tick and
+the ring write 26. The LX7 runs this code at about a fifth of the host's
+rate per clock; only the fast path's pointer runs are cheap.
+
+Checks: RVI frames at 132-180 M identical to beebjit, the boot traces,
+t1poll (10, 31, 77) and irqpoll (lda, sta, inc at two latches), every
+frame case (ARGB and indexed), the disc sweep at 30 and 60 M, Klaus.
+t1poll at latches 3, 150 and 200 diverges, as it did before this work.
