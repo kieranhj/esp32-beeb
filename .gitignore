@@ -13,3 +13,8 @@ host/*.pdb
 
 # host trace outputs
 out/
+
+# ROM and disc images are not part of the repository (Acorn's, and their authors').
+roms/**/*.rom
+discs/**/*.ssd
+discs/**/*.dsd
