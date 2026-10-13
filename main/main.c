@@ -29,6 +29,8 @@
 #include "machine.h"
 #include "video_esp.h"
 #include "bundle.h"
+#include "catalog.h"
+#include "sdcard.h"
 #include "console.h"
 #include "sound_esp.h"
 #include "input.h"
@@ -168,30 +170,30 @@ static void beeb_task(void *arg)
                   t, 160000, 80000);
 #else
     (void)t;
-    // The disc: the one chosen at the console from the bundle partition, else
-    // the bundle's first, else the one embedded in the image. Its pulses go
-    // in PSRAM (1 MB a side), read only.
+    // The disc: the one chosen (console, swipe or menu) from the bundle or
+    // the card, else the list's first, else the one embedded in the image.
+    // Its pulses go in PSRAM (1 MB a side), read only.
     {
         const uint8_t *image = disc0_start;
         uint32_t size = (uint32_t)(disc0_end - disc0_start);
         int sides = strstr(BEEB_DISC_NAME, ".dsd") ? 2 : 1;
         const char *name = BEEB_DISC_NAME;
         const char *source = "embedded";
-        if (bundle_count() > 0) {
+        if (catalog_count() > 0) {
             char chosen[32];
             console_get_disc(chosen, sizeof chosen);
-            int i = chosen[0] ? bundle_find(chosen) : -1;
+            int i = chosen[0] ? catalog_find(chosen) : -1;
             if (i < 0) {
                 i = 0;
             }
-            const struct bundle_entry *e = bundle_entry(i);
-            const uint8_t *mapped = bundle_map(e);
+            const struct catalog_entry *e = catalog_entry(i);
+            const uint8_t *mapped = catalog_load(i);
             if (mapped) {
                 image = mapped;
                 size = e->size;
                 sides = e->sides;
                 name = e->name;
-                source = "bundle";
+                source = e->on_sd ? "card" : "bundle";
             }
         }
         uint32_t *pulses = heap_caps_malloc((size_t)sides * DISC_TRACKS * DISC_BYTES_PER_TRACK * sizeof(uint32_t),
@@ -200,7 +202,8 @@ static void beeb_task(void *arg)
             int64_t t0 = esp_timer_get_time();
             disc_init(&disc0, pulses, sides, 0);
             disc_load_ssd(&disc0, image, size);
-            bundle_unmap();   // the pulses are in PSRAM now
+            catalog_release();   // the pulses are in PSRAM now
+            sdcard_close();      // the card's driver and FATFS hold internal RAM
             machine_set_disc(m, 0, &disc0);
             machine_autoboot(m);
             for (size_t i = 0; i < sizeof s_boot_keys / sizeof s_boot_keys[0]; i++) {
@@ -393,6 +396,8 @@ void app_main(void)
         ESP_LOGW(TAG, "nvs: %s", esp_err_to_name(nvs));
     }
     bundle_open();
+    sdcard_open(i2c);   // before input_init, which keeps the expander's directions
+    catalog_build();
     console_start();
     if (sound_init(i2c, console_get_volume()) != ESP_OK) {
         ESP_LOGW(TAG, "no sound");

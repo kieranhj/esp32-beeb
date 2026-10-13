@@ -12,7 +12,7 @@
 #include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "bundle.h"
+#include "catalog.h"
 #include "sound_esp.h"
 
 static const char *TAG = "console";
@@ -81,14 +81,15 @@ static void command(char *line)
     } else if (strcmp(line, "list") == 0) {
         char cur[32];
         console_get_disc(cur, sizeof cur);
-        printf("console: %d discs in the bundle (chosen: %s)\n", bundle_count(), cur[0] ? cur : "none");
-        for (int i = 0; i < bundle_count(); i++) {
-            const struct bundle_entry *e = bundle_entry(i);
-            printf("  %s %lu bytes %s\n", e->name, (unsigned long)e->size, e->sides == 2 ? "two sides" : "");
+        printf("console: %d discs (chosen: %s)\n", catalog_count(), cur[0] ? cur : "none");
+        for (int i = 0; i < catalog_count(); i++) {
+            const struct catalog_entry *e = catalog_entry(i);
+            printf("  %s %lu bytes%s%s\n", e->name, (unsigned long)e->size, e->sides == 2 ? " two sides" : "",
+                   e->on_sd ? " (card)" : "");
         }
     } else if (strcmp(line, "boot") == 0) {
-        if (bundle_find(arg) < 0) {
-            printf("console: no disc called '%s' in the bundle\n", arg);
+        if (catalog_find(arg) < 0) {
+            printf("console: no disc called '%s' (list shows them)\n", arg);
             return;
         }
         console_set_disc(arg);

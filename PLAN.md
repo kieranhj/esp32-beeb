@@ -206,8 +206,15 @@ frame cases for the rest of `discs/`.
       time, since the data MMU cannot take 12 MB beside PSRAM) and a serial
       console (`main/console.c`, `tools/beeb.py COM3 boot x.ssd`) that
       persists the choice in NVS and resets. All 44 discs are on the board.
-- [ ] `.ssd`/`.dsd` on the SD card over SDMMC, through a small sector cache
-      in PSRAM.
+- [x] `.ssd`/`.dsd` on the SD card (`main/sdcard.c`): 1-bit SDMMC (CLK 2,
+      CMD 1, D0 3, D3 on the expander's EXIO7, driven high), mounted at
+      boot, the root and `/discs` listed, the chosen image read into
+      PSRAM and expanded like a bundle one, then unmounted (the driver
+      holds internal RAM). `main/catalog.c` puts the bundle and the card
+      in one list for the console, the swipe and the boot choice; a card
+      image with a bundle disc's name replaces it. Without a card the
+      mount times out in 250 ms and boot goes on. Not yet tried with a
+      card in the slot.
 - [x] SN76489 (`main/sn76489.c`, beebjit's model): the bytes the system
       VIA lands on it go to a queue with their cycle; a task on core 0
       renders the chip 4 ms behind the machine at its own 250 kHz step rate,

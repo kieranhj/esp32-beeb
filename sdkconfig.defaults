@@ -49,3 +49,6 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 
 # EXT_RAM_BSS_ATTR data (the teletext glyph sets) goes to PSRAM.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# Long file names on the SD card (disc names like bs-twisted.ssd).
+CONFIG_FATFS_LFN_HEAP=y

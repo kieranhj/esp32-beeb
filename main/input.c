@@ -7,7 +7,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "bundle.h"
+#include "catalog.h"
 #include "console.h"
 #include "sound_esp.h"
 
@@ -70,18 +70,18 @@ int input_take_key(int *row, int *col, int *down)
 
 static void change_disc(int step)
 {
-    int n = bundle_count();
+    int n = catalog_count();
     if (n <= 0) {
         return;
     }
     char cur[32];
     console_get_disc(cur, sizeof cur);
-    int i = cur[0] ? bundle_find(cur) : 0;
+    int i = cur[0] ? catalog_find(cur) : 0;
     if (i < 0) {
         i = 0;
     }
     i = (i + step + n) % n;
-    const struct bundle_entry *e = bundle_entry(i);
+    const struct catalog_entry *e = catalog_entry(i);
     ESP_LOGI(TAG, "disc %d: %s", i, e->name);
     console_set_disc(e->name);
     vTaskDelay(pdMS_TO_TICKS(50));
