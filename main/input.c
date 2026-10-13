@@ -25,7 +25,7 @@ static const char *TAG = "input";
 #define SWIPE_PX 60
 #define SHORT_PRESS_MAX_MS 1500    // released before this: restart
 #define MUTE_PRESS_MS 2000         // held this long: sound off/on (6 s is the power chip's power-off)
-// A shake restarts, as PWR does: three samples past 2.5 g within 0.6 s.
+// A shake opens the disc menu: three samples past 2.5 g within 0.6 s.
 // A tap or a knock is one spike; carrying the board is well under 2 g.
 #define SHAKE_MPS2 (2.5f * 9.81f)
 #define SHAKE_HITS 3
@@ -255,15 +255,17 @@ static void input_task(void *arg)
         if (s_imu_ok) {
             static int hits;
             static int64_t first_hit;
-            float ax, ay, az;
-            if (qmi8658_read_accel(&s_imu, &ax, &ay, &az) == ESP_OK &&
-                ax * ax + ay * ay + az * az > SHAKE_MPS2 * SHAKE_MPS2) {
+            float ax = 0, ay = 0, az = 0;
+            esp_err_t err = qmi8658_read_accel(&s_imu, &ax, &ay, &az);
+            float m2 = ax * ax + ay * ay + az * az;
+            if (err == ESP_OK && m2 > SHAKE_MPS2 * SHAKE_MPS2) {
                 if (hits == 0 || now - first_hit > SHAKE_WINDOW_MS * 1000) {
                     hits = 0;
                     first_hit = now;
                 }
-                if (++hits >= SHAKE_HITS) {
-                    ESP_LOGI(TAG, "shake: restart");
+                if (++hits >= SHAKE_HITS && !s_menu) {
+                    ESP_LOGI(TAG, "shake: menu");
+                    console_set_menu();
                     vTaskDelay(pdMS_TO_TICKS(50));
                     esp_restart();
                 }
@@ -322,16 +324,27 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c)
             s_touch = NULL;
         }
     }
-    // The QMI8658 (FluidBox imu.c): accelerometer only, 8 g, 125 Hz.
+    // The QMI8658, set up as FluidBox's imu.c does: a soft reset first (it
+    // keeps its state through esp_restart, and without the reset every read
+    // was zero), then 8 g at 250 Hz with the gyro on as well.
     for (int a = 0; a < 2 && !s_imu_ok; a++) {
         uint8_t addr = a ? QMI8658_ADDRESS_LOW : QMI8658_ADDRESS_HIGH;
-        if (i2c_master_probe(i2c, addr, 50) == ESP_OK && qmi8658_init(&s_imu, i2c, addr) == ESP_OK &&
+        if (i2c_master_probe(i2c, addr, 50) != ESP_OK || qmi8658_init(&s_imu, i2c, addr) != ESP_OK) {
+            continue;
+        }
+        if (qmi8658_write_register(&s_imu, 0x60, 0xb0) != ESP_OK) {   // soft reset
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (qmi8658_write_register(&s_imu, QMI8658_CTRL1, 0x60) == ESP_OK &&
             qmi8658_set_accel_range(&s_imu, QMI8658_ACCEL_RANGE_8G) == ESP_OK &&
-            qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_125HZ) == ESP_OK &&
-            qmi8658_enable_sensors(&s_imu, QMI8658_ENABLE_ACCEL) == ESP_OK) {
+            qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_250HZ) == ESP_OK &&
+            qmi8658_set_gyro_range(&s_imu, QMI8658_GYRO_RANGE_512DPS) == ESP_OK &&
+            qmi8658_set_gyro_odr(&s_imu, QMI8658_GYRO_ODR_250HZ) == ESP_OK &&
+            qmi8658_enable_sensors(&s_imu, QMI8658_ENABLE_ACCEL | QMI8658_ENABLE_GYRO) == ESP_OK) {
             qmi8658_set_accel_unit_mps2(&s_imu, true);
             s_imu_ok = 1;
-            ESP_LOGI(TAG, "QMI8658 at 0x%02x: shake to restart", addr);
+            ESP_LOGI(TAG, "QMI8658 at 0x%02x: shake for the menu", addr);
         }
     }
     const i2c_device_config_t exp_cfg = {

@@ -246,9 +246,10 @@ frame cases for the rest of `discs/`.
       press restarts, a 2 s hold turns the sound off or on. Polled at
       50 Hz on core 0, keys handed to the machine through its key queue.
       Tried on the board: taps, swipes and PWR work.
-- [x] Shake to restart (`input.c`, the QMI8658 at 0x6B, accelerometer
-      only at 8 g): three samples past 2.5 g within 0.6 s. A minute on the
-      desk with no false trigger; not yet shaken by hand.
+- [x] Shake for the disc menu (`input.c`, the QMI8658 at 0x6B, 8 g at
+      250 Hz): three samples past 2.5 g within 0.6 s. It needs a soft
+      reset before setup (FluidBox's sequence); without one every read
+      was zero and shaking did nothing.
 - [ ] A per-disc key map (only boot keys so far: `s_boot_keys` in
       `main/main.c`).
 - [ ] Per-disc notes file in the bundle: machine quirks, which key the

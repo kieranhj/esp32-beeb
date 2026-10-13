@@ -57,7 +57,7 @@ a battery connector, and a microSD slot.
 | Long press (over 0.8 s) | Return, as well |
 | Swipe along the long side | Next or previous disc (restarts) |
 | Swipe across the short side | Open the disc menu |
-| Shake | Restart |
+| Shake | Open the disc menu |
 | PWR, short press | Restart (the disc autoboots, as Shift+BREAK) |
 | PWR, hold 2 s | Sound off or on |
 | PWR, hold 6 s | Power off (the AXP2101 does this itself) |
