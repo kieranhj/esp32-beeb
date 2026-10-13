@@ -613,6 +613,9 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
         c->stat_clk_slow += CRTC_CYCLES() - p1;
 #endif
         if (c->vsync_changed) {
+#ifdef CRTC_VSYNC_LOG
+            CRTC_VSYNC_LOG(c, first + i);
+#endif
             break;
         }
     }

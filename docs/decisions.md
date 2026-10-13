@@ -977,3 +977,35 @@ chip's byte queue (8 KB, a few thousand sequential writes a second) and
 the menu's text rows to PSRAM won most of it back: internal heap at
 machine start 20727 -> 19871 bytes with SD support and the menu added.
 STATS on twisted unchanged.
+
+## 2026-10-13: a sweep of every disc; four CPU/VIA timing fixes
+
+Every disc (NuLA aside) against beebjit at 30 and 60 M cycles, then 15,
+45, 90 and 120 M: 252 frames, 10 differing (TheMaster-Demo128 by 52-59 K
+pixels, bs-nova-invite by 49 K, then a few hundred or less on wave-runner,
+tmoyos, EvlIn11a, evil-inf). Trace windows compared on absolute ticks
+(tracediff compares deltas, so a drift of a few cycles passes it) and
+bisected found four things, each now matched:
+
+- A T1CH write loads the counter with latch + 1; with a latch of FFFF that
+  wrapped the 16-bit counter to 0 and T1 fired at once (TheMaster's
+  user VIA, 131 K cycles early). The counter is 32 bits now, firing as it
+  passes 0.
+- A T1CL or T2CL read on the tick the timer fired leaves the flag set
+  (beebjit's via_t1_just_fired). Found by tools/irqpoll.sh, which runs the
+  user VIA's T1 interrupt against a polling loop.
+- Where an instruction polls the IRQ line around a 1 MHz access: beebjit
+  polls plain reads and writes before the access, so a two-cycle stretch
+  moves the poll back two cycles; a one-cycle stretch (the access in step
+  with the 1 MHz clock the VIA timers change on) leaves it, as a timer
+  event on that tick fires before beebjit's poll; read-modify-writes poll
+  in their last access (stretch ignored). irqpoll.sh in five addressing
+  modes, 20 latch values each, identical.
+- An NMI latched within the first three cycles of an IRQ sequence takes
+  it over (NMI vector, one sequence; beebjit checks there). Ours decided
+  at the start and ran two sequences. The core now syncs at that cycle if
+  a sync point is due and checks.
+
+After them all 252 frames are identical, as are the boot traces,
+t1poll, every frame case and Klaus. Board: twisted 75-103 clk/cyc as
+before.

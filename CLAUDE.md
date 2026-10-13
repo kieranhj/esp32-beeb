@@ -103,7 +103,14 @@ as `F tick h v s ma d`, the same on both sides, so `diff` finds the
 first differing byte and the CPU trace at that tick says why. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
 into both emulators (beebjit `writem`/`e pc=`, ours `TRACE_JSR`) and
 diffs the traces: the regression test for VIA accesses that land on a
-timer event; run it for a few latch values. `TRACE_FROM=<cycle>` limits
+timer event; run it for a few latch values. `sh tools/irqpoll.sh host/trace.exe <latch> 12 <mode>` does the same
+with the user VIA's T1 interrupt enabled and a polling loop in one
+addressing mode (`lda`, `ldy`, `ldiy`, `sta`, `inc`): the regression test
+for where an instruction polls the IRQ line around a 1 MHz access. A
+sweep of every disc against beebjit (`python tools/discsweep.py <cycles,...>`, frametest's
+`run_disc_test` per disc and cycle) finds what the frame cases miss; a
+frame that differs by a lot is usually a CPU drift, found by comparing
+trace windows on absolute ticks (tracediff compares deltas only). `TRACE_FROM=<cycle>` limits
 our trace to a window. `tools/frametest.py` drives both emulators through the
 keyboard matrix; its cases are the regression set for video changes. Build
 it a second time with `-DRENDER_INDEXED` (the board's pixel type) as

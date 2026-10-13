@@ -166,6 +166,26 @@ open(p, 'w', newline=chr(10)).write(s)
 print("bbc.c patched: memory sync in fast mode")
 PYEOF
 
+# BEEBJIT_LOG_VSYNC=1 prints every vsync edge: the CRTC tick it happened on
+# and the system time when the video caught up to it (CA1 lands then).
+python -I - "$PATCHED/video.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, newline='').read().replace(chr(13) + chr(10), chr(10))
+anchor = """  p_video->in_vsync = is_new_vsync;
+"""
+assert anchor in s
+add = anchor + """  if (getenv("BEEBJIT_LOG_VSYNC")) {
+    fprintf(stderr, "V %llu now %llu level %d@N@", (unsigned long long) ticks,
+            (unsigned long long) timing_get_total_timer_ticks(p_video->p_timing), is_new_vsync);
+  }
+"""
+add = add.replace("@N@", chr(92) + "n")
+s = s.replace(anchor, add, 1)
+open(p, 'w', newline=chr(10)).write(s)
+print("video.c patched: vsync log")
+PYEOF
+
 cat > "$OUT/stub.c" <<'STUB'
 /* beebjit declares this label .globl in asm/x64/asm_inturbo_x64.S but never
  * defines it; GNU as lets that pass, clang's assembler does not. */

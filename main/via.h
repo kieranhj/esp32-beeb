@@ -44,7 +44,10 @@ struct via {
     uint8_t ora, orb, ddra, ddrb;
     uint8_t ira, irb;         // latched inputs (ACR bits 0/1)
     uint8_t sr, acr, pcr, ifr, ier;
-    uint16_t t1c, t1l, t2c, t2l;
+    // T1's counter is wider than the chip's: a T1CH write loads latch + 1
+    // (the extra tick of the load), which for a latch of FFFF is 10000.
+    uint32_t t1c;
+    uint16_t t1l, t2c, t2l;
     uint8_t t1_armed, t2_armed, t1_reload, pb7;
     uint8_t ca1, ca2, cb1, cb2;
     uint8_t peripheral_a, peripheral_b;  // pin levels from the outside

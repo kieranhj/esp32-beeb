@@ -42,6 +42,7 @@ static long long fetch_lo, fetch_hi;
                     (unsigned long)crtc_owner(c)->cpu.last_wr); \
         } \
     } while (0)
+#define CRTC_VSYNC_LOG(c, t) do { if (getenv("FRAME_LOG_VSYNC")) fprintf(stderr, "V %lu level %d\n", (unsigned long)(t), (int)crtc_owner(c)->sysvia.ca1); } while (0)
 #include "../main/machine.c"
 
 // Optional instruction trace (--trace file), same format as host/trace.c.

@@ -402,6 +402,9 @@ INLINE struct machine *crtc_owner(struct crtc *c)
 
 INLINE void machine_vsync(struct machine *m, int level)
 {
+#ifdef MACHINE_VSYNC_LOG
+    MACHINE_VSYNC_LOG(m, level);
+#endif
     via_set_ca1(&m->sysvia, level);
     if (m->vs) {
         vs_put(m->vs, VS_EV(VS_VSYNC, level));

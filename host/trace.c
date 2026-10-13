@@ -33,9 +33,10 @@ static void trace_line(struct cpu6502 *cpu, int kind)
     }
     if (kind && debug_irq) {
         struct machine *mm = cpu->m;
-        fprintf(stderr, "%s at %lu pc=%04X: sysvia ifr=%02X ier=%02X  usrvia ifr=%02X ier=%02X\n",
+        fprintf(stderr, "%s at %lu pc=%04X: sysvia ifr=%02X ier=%02X  usrvia ifr=%02X ier=%02X  hist=%04X stretch=%u\n",
                 kind == 1 ? "IRQ" : "NMI", (unsigned long)cpu->cyc, cpu->pc,
-                mm->sysvia.ifr, mm->sysvia.ier, mm->usrvia.ifr, mm->usrvia.ier);
+                mm->sysvia.ifr, mm->sysvia.ier, mm->usrvia.ifr, mm->usrvia.ier,
+                (unsigned)(cpu->irq_hist & 0xffff), (unsigned)cpu->stretch);
     }
     memset(f, ' ', 8);
     f[8] = 0;

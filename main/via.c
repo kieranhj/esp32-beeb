@@ -86,7 +86,7 @@ VIA_API void via_tick(struct via *via)
         via->t1c = via->t1l;
     } else {
         via->t1c--;
-        if (via->t1c == 0xffff) {
+        if (via->t1c == 0xffffffffu) {   // past 0: reads FFFF, fires
             if (via->t1_armed) {
                 via_raise(via, VIA_INT_T1);
                 via->pb7 ^= 1;
@@ -145,13 +145,21 @@ VIA_API uint8_t via_read(struct via *via, uint8_t reg)
     case VIA_DDRB: return via->ddrb;
     case VIA_DDRA: return via->ddra;
     case VIA_T1CL:
-        via_clear(via, VIA_INT_T1);
+        // A read on the tick T1 fired (the counter showing FFFF, reloading
+        // next) leaves the flag set: beebjit's via_t1_just_fired.
+        if (!via->t1_reload) {
+            via_clear(via, VIA_INT_T1);
+        }
         return via->t1c & 0xff;
-    case VIA_T1CH: return via->t1c >> 8;
+    case VIA_T1CH: return (via->t1c >> 8) & 0xff;
     case VIA_T1LL: return via->t1l & 0xff;
     case VIA_T1LH: return via->t1l >> 8;
     case VIA_T2CL:
-        via_clear(via, VIA_INT_T2);
+        // Likewise on the tick T2 fired (it fires on reaching FFFF; a later
+        // wrap through FFFF has no flag to keep, so the test is enough).
+        if (via->t2c != 0xffff) {
+            via_clear(via, VIA_INT_T2);
+        }
         return via->t2c & 0xff;
     case VIA_T2CH: return via->t2c >> 8;
     case VIA_SR: return via->sr;

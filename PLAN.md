@@ -36,6 +36,9 @@ core 0 load), from the STATS line:
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
 
+Every disc in `discs/` except the NuLA ones (out of scope) is pixel
+identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
+
 Next: core 0 on the teletext and loading screens, then the SN76489 write cycle, then
 frame cases for the rest of `discs/`.
 

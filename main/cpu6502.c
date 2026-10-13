@@ -458,12 +458,15 @@ INLINE void rmw_tail(struct cpu6502 *cpu, uint16_t ea, uint8_t m)
     }
 }
 
+// beebjit polls a read-modify-write's interrupts in its last access, not
+// before its first, so a 1 MHz stretch does not move the poll: stretch 0.
 #define RMW(ea, op)                              \
     do {                                         \
         uint16_t ea_ = (ea);                     \
         uint8_t m_ = rd(cpu, ea_);               \
         rmw_tail(cpu, ea_, m_);                  \
         wr(cpu, ea_, op(cpu, m_));               \
+        cpu->stretch = 0;                        \
     } while (0)
 
 // abs,X read-modify-write. The shift/rotate group on CMOS takes 6 cycles
@@ -576,12 +579,19 @@ INLINE void cpu_hist_update(struct cpu6502 *cpu)
 // (beebjit's interpreter polls before the access), so an edge in the
 // stretch waits. An IRQ that is being taken vectors through NMI instead if
 // the edge arrived after the poll (the 65C12 as beebjit models it).
+// For the IRQ line, a two-cycle stretch moves the poll back two bits; a
+// one-cycle stretch (the access started in step with the 1 MHz clock, on
+// which the VIA timers change) leaves it at bit 2, since a timer event on
+// the polled tick fires before beebjit's poll. Read-modify-writes poll in
+// their last access in beebjit and clear the stretch (RMW above).
+// tools/irqpoll.sh checks this for each addressing mode against beebjit.
 // Returns 1 if an interrupt sequence ran.
 static CPU6502_CODE_ATTR __attribute__((noinline)) int take_interrupt(struct cpu6502 *cpu)
 {
     cpu_hist_update(cpu);
     int nmi_polled = cpu->nmi_pending && (int32_t)(cpu->cyc - cpu->stretch - cpu->nmi_cycle) >= 2;
-    if (!nmi_polled && !((cpu->irq_hist & 4) && !cpu->i_poll)) {
+    uint32_t poll_bit = (cpu->stretch == 2) ? 4 : 2;
+    if (!nmi_polled && !(((cpu->irq_hist >> poll_bit) & 1) && !cpu->i_poll)) {
         return 0;
     }
     int take_nmi = cpu->nmi_pending;
@@ -589,7 +599,32 @@ static CPU6502_CODE_ATTR __attribute__((noinline)) int take_interrupt(struct cpu
     CPU6502_TRACE_IRQ(cpu, take_nmi);
     (void)rd(cpu, cpu->pc);
     (void)rd(cpu, cpu->pc);
-    interrupt(cpu, take_nmi ? 0xfffa : 0xfffe, 0);
+    if (!take_nmi) {
+        // beebjit looks for an NMI three cycles into the IRQ sequence and,
+        // if one has been latched by then, takes the NMI vector instead:
+        // one sequence, not two. The machine is brought to that cycle first
+        // if a sync point (an NMI edge among them) has come due.
+        push(cpu, cpu->pc >> 8);
+        if ((int32_t)(cpu->cyc - cpu->sync_due) >= 0) {
+            CPU6502_SYNC(cpu);
+        }
+        if (cpu->nmi_pending) {
+            cpu->nmi_pending = 0;
+            take_nmi = 1;
+        }
+        push(cpu, cpu->pc & 0xff);
+        push(cpu, pack_p(cpu, 0));
+        cpu->i = 1;
+        cpu->i_poll = 1;
+        if (IS_CMOS(cpu)) {
+            cpu->d = 0;
+        }
+        uint16_t vec = take_nmi ? 0xfffa : 0xfffe;
+        uint16_t lo = rd(cpu, vec);
+        cpu->pc = lo | (rd(cpu, vec + 1) << 8);
+        return 1;
+    }
+    interrupt(cpu, 0xfffa, 0);
     return 1;
 }
 
@@ -678,10 +713,11 @@ uint64_t CPU6502_FN(cpu6502_run)(struct cpu6502 *cpu_in, uint64_t until)
         // Interrupt decision for the instruction that just finished. The
         // test here must stay tiny: this loop head is duplicated into every
         // opcode's tail by the compiler, so the rest is out of line. The
-        // history is kept lazily: bit 2 can only be set if the line is
-        // high or was within the last three cycles of the history, and
-        // take_interrupt brings it up to date before deciding.
-        if ((cpu->nmi_pending || ((cpu->irq_line || (cpu->irq_hist & 7)) && !cpu->i_poll)) && take_interrupt(cpu)) {
+        // history is kept lazily: the polled bit can only be set if the line is
+        // high or was within the last five cycles of the history (bit 4
+        // after a two-cycle stretch), and take_interrupt brings it up to
+        // date before deciding.
+        if ((cpu->nmi_pending || ((cpu->irq_line || (cpu->irq_hist & 0x1f)) && !cpu->i_poll)) && take_interrupt(cpu)) {
             continue;
         }
 
