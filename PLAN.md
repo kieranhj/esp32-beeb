@@ -152,13 +152,15 @@ frame cases for the rest of `discs/`.
       80% (colour codes resolved at emit, the run loop specialised, three
       band buffers, the machine waits for ring room instead of lapping).
 - [ ] Mode 7: mmode7 runs at 80% of core 0 since the fused teletext run
-      (see decisions, "mode 7, a fused run"). Next: the scaler (26% of
-      the core on teletext screens, 2.6 K clocks a panel row; adjacent
-      rows are adjacent in the rotated band, so a row and its double
-      could go out as one 32-bit store), then the run itself (112 clocks
-      a character). Re-measure the other teletext discs.
-- [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0);
-      a continuation write (0x3C) would halve the transactions per band.
+      (see decisions, "mode 7, a fused run"). A doubled scanline's two
+      panel rows now go out in one pass (one 32-bit store a pixel pair
+      when aligned): mmode7 rows 913 -> 877 ms per 5 s, core 0 80-81% ->
+      79-80%; twisted about a point lower. Next: the run itself (112
+      clocks a character), and the scaler's 5.6 clocks a pixel.
+- [ ] Panel path: 44 us of SPI driver time to queue a band (7% of core 0).
+      A continuation write (0x3C) cannot replace the column window: a
+      band is 16 native columns and the panel fills its window row-major.
+      Sending the 4-byte window inline (no DMA) changed nothing.
       The scaler is 14%; a two-pixel lookup would help.
 - [x] Core 1 on the VIA pollers and while loading: sotc and mott 139 ->
       111-117 (the quiet VIA path tests the sync point instead of

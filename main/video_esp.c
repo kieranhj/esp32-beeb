@@ -251,6 +251,65 @@ static RENDER_FN void write_row(const render_px *px, uint32_t first, uint32_t co
     s_clk_rows += esp_cpu_get_cycle_count() - c0;
 }
 
+// Panel rows y and y + 1 (same band) in one pass: from pa and pb, or both
+// from pa when pb is NULL (a bitmap scanline doubled). In the rotated band
+// row y + 1's pixel sits just below row y's, so a pair is one 32-bit store
+// when it is word aligned (y even within the band), two 16-bit ones else.
+#define PAIR_SRC_OFFSETS(X) X(0, 0) X(1, 1) X(2, 2) X(3, 4) X(4, 5) X(5, 7) X(6, 8) \
+    X(7, 10) X(8, 11) X(9, 12) X(10, 14) X(11, 15) X(12, 17) X(13, 18)
+static RENDER_FN void write_rows2(const render_px *pa, const render_px *pb, int y, uint32_t i0, uint32_t i1)
+{
+    seek_band(y / DISPLAY_BAND_ROWS);
+    uint32_t c0 = esp_cpu_get_cycle_count();
+    s_rows += 2;
+    uint16_t *d0 = row_dst(y, i0, i1);
+    uint16_t *d1 = row_dst(y + 1, i0, i1);   // d0 - 1
+    s_last_row = pb ? d1 : d0;
+    const uint16_t *rgb = s_rgb;
+    uint32_t g0 = (i0 + 13) / 14, g1 = i1 / 14;
+    uint32_t t0 = g0 * 14 < i1 ? g0 * 14 : i1;
+    uint32_t t1 = g1 * 14 > i0 ? g1 * 14 : i0;
+    const render_px *pb_ = pb ? pb : pa;
+    for (uint32_t i = i0; i < t0; i++) {
+        d0[i * BAND_STRIDE] = rgb[pa[s_src_x[i]]];
+        d1[i * BAND_STRIDE] = rgb[pb_[s_src_x[i]]];
+    }
+    if (!((uintptr_t)d1 & 3)) {
+        uint32_t *w = (uint32_t *)d1;
+        const uint32_t ws = BAND_STRIDE / 2;
+        if (pb) {
+            for (uint32_t g = g0; g < g1; g++) {
+                const render_px *sa = pa + PIC_X0 + 20 * g, *sb = pb + PIC_X0 + 20 * g;
+                uint32_t *d = w + 14 * g * ws;
+#define PAIR2(k, o) d[(k) * ws] = rgb[sb[o]] | ((uint32_t)rgb[sa[o]] << 16);
+                PAIR_SRC_OFFSETS(PAIR2)
+#undef PAIR2
+            }
+        } else {
+            for (uint32_t g = g0; g < g1; g++) {
+                const render_px *sa = pa + PIC_X0 + 20 * g;
+                uint32_t *d = w + 14 * g * ws;
+#define PAIR1(k, o) { uint32_t v_ = rgb[sa[o]]; d[(k) * ws] = v_ | (v_ << 16); }
+                PAIR_SRC_OFFSETS(PAIR1)
+#undef PAIR1
+            }
+        }
+    } else {
+        for (uint32_t g = g0; g < g1; g++) {
+            const render_px *sa = pa + PIC_X0 + 20 * g, *sb = pb_ + PIC_X0 + 20 * g;
+            uint16_t *da = d0 + 14 * g * BAND_STRIDE, *db = d1 + 14 * g * BAND_STRIDE;
+#define PAIRU(k, o) da[(k) * BAND_STRIDE] = rgb[sa[o]]; db[(k) * BAND_STRIDE] = rgb[sb[o]];
+            PAIR_SRC_OFFSETS(PAIRU)
+#undef PAIRU
+        }
+    }
+    for (uint32_t i = t1; i < i1; i++) {
+        d0[i * BAND_STRIDE] = rgb[pa[s_src_x[i]]];
+        d1[i * BAND_STRIDE] = rgb[pb_[s_src_x[i]]];
+    }
+    s_clk_rows += esp_cpu_get_cycle_count() - c0;
+}
+
 // A doubled row that falls in the next band is written when the scanline
 // is complete, not span by span: moving to the next band mid-scanline
 // would send the current band and then seek back into it for the next
@@ -274,6 +333,14 @@ static RENDER_FN void video_emit(struct render *r, uint32_t first, uint32_t coun
     int row1 = PIC_TOP + (((s + 1) * 21) >> 4);
     uint32_t i0 = s_dst_from_src[first];
     uint32_t i1 = s_dst_from_src[first + count];
+    int pair = (row1 - row0 == 2) && ((row0 + 1) / DISPLAY_BAND_ROWS == row0 / DISPLAY_BAND_ROWS);
+    if (pair) {
+        // Both rows at once; teletext's second raster differs, a bitmap
+        // scanline is the same twice.
+        write_rows2(r->line, (r->mode == RENDER_MODE7) ? r->line2 : NULL, row0, i0, i1);
+        s_pending_row = -1;
+        return;
+    }
     write_row(r->line, first, count, row0, i0, i1);
     if (s_pending_row < 0) {
         s_line_i0 = i0;
