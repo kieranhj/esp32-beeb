@@ -277,7 +277,11 @@ static void input_task(void *arg)
             int pressed = read_button();
             if (pressed && button_was && !mute_done && now - button_at >= MUTE_PRESS_MS * 1000) {
                 mute_done = 1;
-                ESP_LOGI(TAG, "PWR held: sound %s", sound_toggle_mute() ? "off" : "on");
+                int muted = sound_toggle_mute();
+                if (!muted && console_get_volume() == 0) {
+                    console_set_volume(70);   // "on" from a kept volume of 0 means audible
+                }
+                ESP_LOGI(TAG, "PWR held: sound %s", muted ? "off" : "on");
             }
             if (pressed == button_was) {
                 agree = 0;

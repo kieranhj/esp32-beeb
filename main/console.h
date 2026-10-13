@@ -11,6 +11,7 @@ void console_start(void);
 void console_get_disc(char *out, unsigned len);
 // The speaker volume chosen at the console (NVS key "vol"), 0 to 100.
 int console_get_volume(void);
+void console_set_volume(int vol);   // sets and keeps it
 // Persists a disc choice (the input task's swipes use it too).
 void console_set_disc(const char *name);
 // Asks for the menu on the next boot; console_take_menu() reads and clears

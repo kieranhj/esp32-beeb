@@ -42,7 +42,7 @@ int console_get_volume(void)
     return (int)vol;
 }
 
-static void set_volume(int vol)
+void console_set_volume(int vol)
 {
     nvs_handle_t h;
     if (nvs_open("beeb", NVS_READWRITE, &h) == ESP_OK) {
@@ -123,7 +123,7 @@ static void command(char *line)
         esp_restart();
     } else if (strcmp(line, "vol") == 0) {
         int vol = atoi(arg);
-        set_volume(vol);
+        console_set_volume(vol);
         printf("console: volume %d\n", vol);
     } else if (strcmp(line, "menu") == 0) {
         console_set_menu();

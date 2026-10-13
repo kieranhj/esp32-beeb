@@ -73,8 +73,11 @@ void sound_write(uint32_t cycle, uint8_t byte)
     s_writes++;
 }
 
+static int s_volume;
+
 void sound_set_volume(int volume)
 {
+    s_volume = volume;
     if (s_speaker) {
         esp_codec_dev_set_out_vol(s_speaker, volume < 0 ? 0 : volume > 100 ? 100 : volume);
     }
@@ -83,7 +86,8 @@ void sound_set_volume(int volume)
 int sound_toggle_mute(void)
 {
     static int muted;
-    muted = !muted;
+    // At volume 0 the sound is already off, so the toggle turns it on.
+    muted = (muted || s_volume == 0) ? 0 : 1;
     if (s_speaker) {
         esp_codec_dev_set_out_mute(s_speaker, muted);
     }
@@ -252,6 +256,7 @@ esp_err_t sound_init(i2c_master_bus_handle_t i2c, int volume)
         ESP_LOGW(TAG, "codec open failed");
         return ESP_FAIL;
     }
+    s_volume = volume;
     esp_codec_dev_set_out_vol(s_speaker, volume);
     if (xTaskCreatePinnedToCore(sound_task, "sound", 4096, NULL, 6, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "no memory for the sound task");
