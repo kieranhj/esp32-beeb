@@ -7,6 +7,7 @@
 //   swipe across          the disc menu (reboots into it, menu.h)
 //   PWR button short      restart (BREAK with Shift: the disc autoboots)
 //   PWR held 2 s          sound off / on
+//   shake                 restart, as PWR
 //
 // The CST816/CST820 touch controller (I2C 0x15) and the TCA9554 expander
 // carrying the PWR button (0x20) are polled by a task on core 0; the keys

@@ -10,6 +10,8 @@
 #include "catalog.h"
 #include "console.h"
 #include "sound_esp.h"
+#undef M_PI   // qmi8658.h defines its own
+#include "qmi8658.h"
 
 static const char *TAG = "input";
 
@@ -23,6 +25,11 @@ static const char *TAG = "input";
 #define SWIPE_PX 60
 #define SHORT_PRESS_MAX_MS 1500    // released before this: restart
 #define MUTE_PRESS_MS 2000         // held this long: sound off/on (6 s is the power chip's power-off)
+// A shake restarts, as PWR does: three samples past 2.5 g within 0.6 s.
+// A tap or a knock is one spike; carrying the board is well under 2 g.
+#define SHAKE_MPS2 (2.5f * 9.81f)
+#define SHAKE_HITS 3
+#define SHAKE_WINDOW_MS 600
 
 // Keyboard matrix positions (row, column).
 #define KEY_SPACE_ROW 6
@@ -31,6 +38,8 @@ static const char *TAG = "input";
 #define KEY_RETURN_COL 9
 
 static i2c_master_dev_handle_t s_touch, s_expander;
+static qmi8658_dev_t s_imu;
+static int s_imu_ok;
 
 // The mailbox: a small ring, one producer (this task), one consumer (the
 // machine's loop).
@@ -241,6 +250,26 @@ static void input_task(void *arg)
             was_down = down;
         }
 
+        // A shake: the accelerometer at the poll rate, gravity included (a
+        // board at rest reads 1 g, so the threshold is on the magnitude).
+        if (s_imu_ok) {
+            static int hits;
+            static int64_t first_hit;
+            float ax, ay, az;
+            if (qmi8658_read_accel(&s_imu, &ax, &ay, &az) == ESP_OK &&
+                ax * ax + ay * ay + az * az > SHAKE_MPS2 * SHAKE_MPS2) {
+                if (hits == 0 || now - first_hit > SHAKE_WINDOW_MS * 1000) {
+                    hits = 0;
+                    first_hit = now;
+                }
+                if (++hits >= SHAKE_HITS) {
+                    ESP_LOGI(TAG, "shake: restart");
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    esp_restart();
+                }
+            }
+        }
+
         // The PWR button, debounced: a short press restarts; held for 2 s it
         // toggles the sound at once, so the change is heard while held. The
         // AXP2101 cuts the power itself at 6 s.
@@ -287,6 +316,18 @@ esp_err_t input_init(i2c_master_bus_handle_t i2c)
             ESP_LOGW(TAG, "no touch controller at 0x15");
             i2c_master_bus_rm_device(s_touch);
             s_touch = NULL;
+        }
+    }
+    // The QMI8658 (FluidBox imu.c): accelerometer only, 8 g, 125 Hz.
+    for (int a = 0; a < 2 && !s_imu_ok; a++) {
+        uint8_t addr = a ? QMI8658_ADDRESS_LOW : QMI8658_ADDRESS_HIGH;
+        if (i2c_master_probe(i2c, addr, 50) == ESP_OK && qmi8658_init(&s_imu, i2c, addr) == ESP_OK &&
+            qmi8658_set_accel_range(&s_imu, QMI8658_ACCEL_RANGE_8G) == ESP_OK &&
+            qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_125HZ) == ESP_OK &&
+            qmi8658_enable_sensors(&s_imu, QMI8658_ENABLE_ACCEL) == ESP_OK) {
+            qmi8658_set_accel_unit_mps2(&s_imu, true);
+            s_imu_ok = 1;
+            ESP_LOGI(TAG, "QMI8658 at 0x%02x: shake to restart", addr);
         }
     }
     const i2c_device_config_t exp_cfg = {
