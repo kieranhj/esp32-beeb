@@ -35,6 +35,7 @@ core 0 load), from the STATS line:
 | bs-twisted | 65-117 (the twister 105, the ending 117) | 56-88% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
+| evil-inf (RVI, from 65 s) | 172 (was 242) | 80% |
 
 Every disc in `discs/` except the NuLA ones (out of scope) is pixel
 identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
@@ -189,6 +190,16 @@ frame cases for the rest of `discs/`.
       one, its video only catching up after the store. Matching it means
       leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
       clocks on the drawing effects). See decisions.
+- [ ] evil-inf's RVI part (from about 65 s): 242 -> 172 clocks per cycle,
+      so it runs at 70% speed. Each scanline writes R0=1 at h 0 and R0=95
+      32 ticks later (sixteen two-character lines step the raster), then
+      R9, R12, R13 and the palette. Done: the vsync bound counts rows to
+      R7 instead of stopping at every line end; short lines (R0 < 8)
+      through their own loop. Left, from the profile build (clocks per
+      cycle): short-line ticks 34 (221 a tick: the chain step and the
+      register-starved loop), fast runs 31 (about 250 a run of setup,
+      twelve runs a scanline between the writes), scheduling 17 (400 a
+      call after each write), exact ticks 15, plans 13.
 - [ ] An IC32 screen-size change (system VIA, bits 4 and 5) sets the
       CRTC's wrap at once, but the access may have left the CRTC behind:
       catch it up first if the wrap changes. Make a frame case that shows

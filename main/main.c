@@ -315,6 +315,11 @@ static void beeb_task(void *arg)
                     }
                 }
                 putchar(10);
+                printf("PROF short lines: ticks/M %lu, %.0f clk/tick", (unsigned long)(m->crtc.stat_short * 1e6 / d),
+                       m->crtc.stat_short ? (double)m->crtc.stat_clk_short / m->crtc.stat_short : 0.0);
+                putchar(10);
+                m->crtc.stat_short = 0;
+                m->crtc.stat_clk_short = 0;
             }
             m->stat_clk_advance = m->stat_clk_crtc = m->stat_clk_via = m->stat_clk_fdc = m->stat_clk_io = 0;
             m->stat_clk_due = m->stat_clk_quiet = m->stat_clk_wr_outer = m->stat_clk_sync_outer = 0;

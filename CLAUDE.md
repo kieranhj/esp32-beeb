@@ -99,7 +99,8 @@ shows retroactively back to the last catch-up of any kind. For a
 difference in display bytes, `BEEBJIT_LOG_FETCH=lo,hi` (beebjit) and
 `FRAME_LOG_FETCH=lo,hi` (`host/frame.exe`, which also logs each CRTC run
 with the sync point that caused it) print every fetch in a tick window
-as `F tick h v s ma d`, the same on both sides, so `diff` finds the
+as `F tick h v s ma d`, the same on both sides (ours also logs each CRTC register write
+in the window as `W tick Rn=v h v s`), so `diff` finds the
 first differing byte and the CPU trace at that tick says why. `sh tools/t1poll.sh host/trace.exe <latch>` pokes a T1-polling loop
 into both emulators (beebjit `writem`/`e pc=`, ours `TRACE_JSR`) and
 diffs the traces: the regression test for VIA accesses that land on a

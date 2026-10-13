@@ -1009,3 +1009,39 @@ bisected found four things, each now matched:
 After them all 252 frames are identical, as are the boot traces,
 t1poll, every frame case and Klaus. Board: twisted 75-103 clk/cyc as
 before.
+
+## 2026-10-13: RVI (evil-inf from 65 s): 242 -> 172 clocks per cycle
+
+The demo's RVI part ran at half speed (242 clocks per emulated cycle on
+core 1, budget 120). Per 64 us scanline it writes R0=1 at h 0, so for 32
+ticks the 6845 runs two-character lines that step the raster counter
+(R4=0, R9=14, R7=3, cursor off), then R0=95 for the rest, R9, R12 and R13
+for the next row and two or three palette entries. Host profile of
+140-150 M against 100-110 M: 112 K machine syncs per million cycles
+against 9 K, and 120 K exact CRTC ticks against 24 K.
+
+- Syncs. crtc_ticks_to_check stopped the machine at every line end in
+  case a vsync started there, sixteen times a scanline here. A vsync
+  starts only at a line start whose row counter equals R7 (or within a
+  vsync, or at the half-R0 point of the R7 row); the counter moves one
+  per row end and to 0 at a frame start, and a row is R9 / stride + 1
+  lines, so the bound is now the line end at which it could first get
+  there (crtc_line_ends_to_r7). Board 242 -> 194; the quiet part of the
+  demo 62 -> 57.
+- Short lines. With R0 below 8 at 2 MHz, crtc_run hands the ticks to
+  crtc_short_lines, which does what crtc_tick does with the counters in
+  locals and a plain line end inline (not the row's last line, no
+  vsync, adjust or frame end pending: crtc_end_of_line, split out of
+  crtc_tick, takes the others), and stops for an hsync, cursor activity
+  or a row at R7. A first version with the line end through the shared
+  function: 194 -> 177; the line end inline (its row address event
+  through the run's ring head, CRTC_RUN_RA): 172. It is noinline: one
+  copy in IRAM.
+
+The machine behaves identically (the same sync and tick counts in
+host/bench.exe), and frames at 132, 135, 140, 150, 165 and 180 M (the
+RVI part) are pixel identical to beebjit, as are the boot traces, every
+frame case, the disc sweep at 30 and 60 M, and Klaus. What is left is in
+PLAN.md; a split of crtc_tick on the board (fetch and render 138
+clocks, chain and half-R0 74, line end 51, line-start checks 123) says
+no one thing is the cost.

@@ -42,6 +42,13 @@ static long long fetch_lo, fetch_hi;
                     (unsigned long)crtc_owner(c)->cpu.last_wr); \
         } \
     } while (0)
+#define CRTC_WRITE_LOG(c, reg, val) do { \
+        unsigned long t_ = (unsigned long)crtc_owner(c)->synced; \
+        if ((long long)t_ >= fetch_lo && (long long)t_ < fetch_hi) { \
+            fprintf(stderr, "W %lu R%d=%u h %u v %u s %u\n", t_, (reg), (unsigned)(val), (unsigned)(c)->horiz_counter, \
+                    (unsigned)(c)->vert_counter, (unsigned)(c)->scanline_counter); \
+        } \
+    } while (0)
 #define CRTC_VSYNC_LOG(c, t) do { if (getenv("FRAME_LOG_VSYNC")) fprintf(stderr, "V %lu level %d\n", (unsigned long)(t), (int)crtc_owner(c)->sysvia.ca1); } while (0)
 #include "../main/machine.c"
 
@@ -282,6 +289,11 @@ int main(int argc, char **argv)
                         c->is_end_of_vert_adjust_latched, c->is_end_of_frame_latched, c->is_in_vert_adjust,
                         c->in_dummy_raster, c->in_vsync, c->display_enable_bits, c->r4_hit, c->r9_hit);
                 fprintf(stderr, "  acccon=%02x romsel=%02x ula=%02x r12=%02x r13=%02x\n", m->acccon, m->romsel, m->ula_ctrl, c->reg[12], c->reg[13]);
+                fprintf(stderr, "  regs");
+                for (int r_ = 0; r_ < 16; r_++) {
+                    fprintf(stderr, " %u", c->reg[r_]);
+                }
+                fputc(10, stderr);
                 fprintf(stderr, "  beam %ld,%ld render_pos %ld span %u..%u" "\n", (long)render.horiz_beam_pos, (long)render.vert_beam_pos, (long)render.render_pos, render.span_start, render.span_end);
             } else if (pokes[next_poke].is_key) {
                 // already queued at start

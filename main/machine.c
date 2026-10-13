@@ -80,6 +80,14 @@ INLINE struct machine *crtc_owner(struct crtc *c);
         } \
     } while (0)
 #define CRTC_RUN_END(c) do { if (vs_) vs_->head = vh_; } while (0)
+#define CRTC_RUN_RELOAD(c) do { if (vs_) vh_ = vs_->head; } while (0)   // after hooks that wrote the ring
+// A row address event from the fast paths, through the run's ring head.
+#define CRTC_RUN_RA(c, ra, isv) do { \
+        if (vs_) { \
+            vs_->ring[vh_ & (VS_RING - 1)] = VS_EV(VS_RA, (ra) | ((isv) ? 0x80 : 0)); \
+            vh_++; \
+        } \
+    } while (0)
 // Linear fetch runs: a load and a store per character.
 INLINE void machine_display_run(const struct machine *m, uint16_t ma, uint8_t ra, uint32_t tick,
                                 const uint8_t **p, uint32_t *stride, uint32_t *chars);

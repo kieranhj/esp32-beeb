@@ -211,52 +211,11 @@ CRTC_INLINE uint8_t crtc_chain_step(struct crtc *c, uint8_t checks)
     return checks;
 }
 
-// One 2 MHz system tick. `tick` is the index of the tick being processed.
-CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
+// The end of a line: the tick after the R0 hit's counting step. `checks`
+// is the start-of-line chain as that step left it.
+CRTC_INLINE void crtc_end_of_line(struct crtc *c, uint8_t r0, uint8_t checks)
 {
-    int is_odd_tick = tick & 1;
-    int is_1mhz = !c->ula_clock_fast;
-    uint8_t r0 = c->reg[CRTC_R0_HTOTAL];
-    uint8_t horiz_counter = c->horiz_counter;
-    int r0_hit = (horiz_counter == r0);
-
-    if (!is_1mhz || !is_odd_tick) {
-        c->data_byte = crtc_rendering_tick(c, horiz_counter, r0_hit, c->r9_hit, is_odd_tick);
-#ifdef CRTC_FETCH_LOG
-        CRTC_FETCH_LOG(c, tick, horiz_counter, (c->address_counter - 1) & 0x3fff, c->data_byte);
-#endif
-    }
-    CRTC_RENDER(c, c->data_byte, c->dispen_shifts[c->skew_dispen_index], is_odd_tick, c->data_ma13);
-
-    if (is_1mhz && !is_odd_tick) {
-        return;
-    }
-
-    uint8_t checks = c->start_of_line_state_checks;
-    if (checks) {
-        checks = crtc_chain_step(c, checks);
-    }
-
-    horiz_counter++;  // wraps at 256
-
-    if ((c->vert_counter == c->reg[CRTC_R7_VSYNC]) || c->is_even_vsync) {
-        if (horiz_counter == c->half_r0) {
-            if (!c->had_even_vsync_this_row) {
-                c->had_even_vsync_this_row = 1;
-                c->is_even_vsync = 1;
-            } else if (c->vsync_scanline_counter == 0) {
-                c->is_even_vsync = 0;
-            }
-            crtc_update_vsync(c);
-        }
-    }
-
-    if (!r0_hit) {
-        c->horiz_counter = horiz_counter;
-        c->start_of_line_state_checks = checks;
-        return;
-    }
-
+    uint8_t horiz_counter;
     // End of horizontal line.
     horiz_counter = 0;
     c->display_enable_bits |= DISPEN_HORIZ;
@@ -318,16 +277,97 @@ CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
     crtc_line_start_checks(c, 1);
 }
 
+// One 2 MHz system tick. `tick` is the index of the tick being processed.
+CRTC_INLINE void crtc_tick(struct crtc *c, uint32_t tick)
+{
+    int is_odd_tick = tick & 1;
+    int is_1mhz = !c->ula_clock_fast;
+    uint8_t r0 = c->reg[CRTC_R0_HTOTAL];
+    uint8_t horiz_counter = c->horiz_counter;
+    int r0_hit = (horiz_counter == r0);
+
+    if (!is_1mhz || !is_odd_tick) {
+        c->data_byte = crtc_rendering_tick(c, horiz_counter, r0_hit, c->r9_hit, is_odd_tick);
+#ifdef CRTC_FETCH_LOG
+        CRTC_FETCH_LOG(c, tick, horiz_counter, (c->address_counter - 1) & 0x3fff, c->data_byte);
+#endif
+    }
+    CRTC_RENDER(c, c->data_byte, c->dispen_shifts[c->skew_dispen_index], is_odd_tick, c->data_ma13);
+
+    if (is_1mhz && !is_odd_tick) {
+        return;
+    }
+
+    uint8_t checks = c->start_of_line_state_checks;
+    if (checks) {
+        checks = crtc_chain_step(c, checks);
+    }
+
+    horiz_counter++;  // wraps at 256
+
+    if ((c->vert_counter == c->reg[CRTC_R7_VSYNC]) || c->is_even_vsync) {
+        if (horiz_counter == c->half_r0) {
+            if (!c->had_even_vsync_this_row) {
+                c->had_even_vsync_this_row = 1;
+                c->is_even_vsync = 1;
+            } else if (c->vsync_scanline_counter == 0) {
+                c->is_even_vsync = 0;
+            }
+            crtc_update_vsync(c);
+        }
+    }
+
+    if (!r0_hit) {
+        c->horiz_counter = horiz_counter;
+        c->start_of_line_state_checks = checks;
+        return;
+    }
+    crtc_end_of_line(c, r0, checks);
+}
+
+// How many line ends, at least, before the row counter can equal R7 at a
+// line start (where a vsync starts): rows advance it by one at a row end,
+// and a frame start sets it to 0 at any line end. A row is R9 / stride + 1
+// lines from a frame start or a row end; the current one ends at the line
+// whose start had an R9 hit. With R0 = 0 the scanline counter stands
+// still, so every line end counts.
+CRTC_INLINE uint32_t crtc_line_ends_to_r7(const struct crtc *c)
+{
+    uint32_t vc = c->vert_counter, r7 = c->reg[CRTC_R7_VSYNC];
+    if (vc == r7 || c->reg[CRTC_R0_HTOTAL] == 0) {
+        return 1;
+    }
+    uint32_t stride = c->scanline_stride, mask = c->scanline_mask;
+    uint32_t target = c->reg[CRTC_R9_MAXRA] & mask;
+    uint32_t row = target / stride + 1;
+    uint32_t cur = c->r9_hit ? 1 : (((target - c->scanline_counter) & mask) / stride + 1);
+    uint32_t via_reset = 1 + r7 * row;   // a frame start at the next line end, then R7 rows
+    if (r7 < vc) {
+        return via_reset;
+    }
+    uint32_t direct = cur + (r7 - vc - 1) * row;
+    return direct < via_reset ? direct : via_reset;
+}
+
 // Ticks until the next tick at which this CRTC could change the vsync
-// level (or needs its per-line bookkeeping): the next end of line, or the
-// half-R0 point in a row that is at or in vsync. Register writes reset the
-// estimate through the machine. Never less than 1.
+// level: the half-R0 point in a row that is at or in vsync, any line end
+// in a vsync, otherwise the line end at which the row counter could first
+// reach R7 (RVI's two-character lines end every other tick, far from it).
+// Register writes reset the estimate through the machine. Never less
+// than 1.
 CRTC_INLINE uint32_t crtc_ticks_to_check(const struct crtc *c, uint32_t tick)
 {
     uint32_t hc = c->horiz_counter;
     uint32_t r0 = c->reg[CRTC_R0_HTOTAL];
     uint32_t to_eol = (hc <= r0) ? (r0 - hc + 1) : (256 - hc + r0 + 1);
     uint32_t t = to_eol;
+    if (!c->in_vsync && !c->is_even_vsync) {
+        uint32_t lines = crtc_line_ends_to_r7(c);
+        if (lines > 1) {
+            uint32_t more = (lines - 1) * (r0 + 1);
+            t = (more > 4096) ? 4096 : to_eol + more;
+        }
+    }
     if ((c->vert_counter == c->reg[CRTC_R7_VSYNC]) || c->is_even_vsync) {
         uint32_t half = c->half_r0;
         uint32_t to_half = (hc < half) ? (half - hc) : (256 - hc + half);
@@ -547,6 +587,154 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
     c->horiz_counter = hc;
 }
 
+// Lines this short (R0 below it) go through crtc_short_lines.
+#ifndef CRTC_SHORT_R0
+#define CRTC_SHORT_R0 8
+#endif
+#ifndef CRTC_RUN_RELOAD
+#define CRTC_RUN_RELOAD(c) ((void)0)
+#endif
+#ifndef CRTC_RUN_RA
+#define CRTC_RUN_RA(c, ra, isv) CRTC_RA(c, ra, isv)
+#endif
+
+// Very short lines at 2 MHz (RVI runs two-character lines for a quarter of
+// each scanline): every tick is within a few of an R0 hit, so the fast
+// path's runs are one tick long and each costs a plan. This steps up to n
+// ticks exactly as crtc_tick does, with the counters in locals, for as
+// long as nothing it leaves out can happen: an hsync (in progress or
+// starting at an R2 hit), cursor activity, a row at R7 or an even-field
+// vsync (the half-R0 check). A plain line end (not the row's last line,
+// no vsync, adjust or frame end pending) is done here, crtc_end_of_line
+// and crtc_line_start_checks inlined and cut to what can happen; any other
+// goes through crtc_end_of_line. Returns the ticks run, 0 if the first
+// could not be; stops after a line end that changed the vsync level.
+static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc *c, uint32_t tick, uint32_t n)
+{
+    uint32_t i = 0;
+    CRTC_RUN_BEGIN(c);
+    for (;;) {
+        // State only a line end changes.
+        if (c->in_hsync || c->cursor_skew_counter >= 0 || c->vert_counter == c->reg[CRTC_R7_VSYNC] ||
+            c->is_even_vsync || c->reg[CRTC_R0_HTOTAL] >= CRTC_SHORT_R0 || c->reg[CRTC_R0_HTOTAL] == 0 ||
+            (!c->cursor_disabled && c->has_hit_cursor_line_start && !c->has_hit_cursor_line_end)) {
+            break;
+        }
+        uint32_t r0 = c->reg[CRTC_R0_HTOTAL], r1 = c->reg[CRTC_R1_HDISP];
+        uint32_t r2 = (c->hsync_width > 0) ? c->reg[CRTC_R2_HSYNC] : 0x100;   // never hit
+        uint32_t hc = c->horiz_counter;
+        uint32_t checks = c->start_of_line_state_checks;
+        uint32_t r9_hit = c->r9_hit;
+        uint32_t bits = c->display_enable_bits;
+        // The DISPEN pipeline as three bits, newest in bit 0.
+        uint32_t pipe = (c->dispen_shifts[0] ? 1 : 0) | (c->dispen_shifts[1] ? 2 : 0) | (c->dispen_shifts[2] ? 4 : 0);
+        uint32_t skew = c->skew_dispen_index;
+        uint32_t ma = c->address_counter;
+        uint32_t sc = c->scanline_counter;
+        uint32_t odd_frame = c->is_isv ? c->is_odd_frame : 0;
+        uint32_t data = c->data_byte, ma13 = c->data_ma13;
+        int plain_ok = !c->in_vsync;
+        int eol = 0;
+        while (i < n) {
+            if (hc == r2) {
+                break;
+            }
+            int r0_hit = (hc == r0);
+            if (hc == r1) {
+                if (r9_hit) {
+                    c->address_counter_saved = (uint16_t)ma;
+                }
+                bits &= ~DISPEN_HORIZ;
+            } else if (r0_hit) {
+                bits &= ~DISPEN_HORIZ;
+            }
+            pipe = ((pipe << 1) | (bits == DISPEN_ALL)) & 7;
+            int dispen = (pipe >> skew) & 1;
+            uint32_t t = tick + i;
+            int odd = t & 1;
+            data = CRTC_FETCH(c, (uint16_t)ma, (uint8_t)(sc | odd_frame), odd);
+            ma13 = (ma >> 13) & 1;
+            if (!odd) {
+                if (ma & 0x2000) {
+                    CRTC_TELETEXT(c, data, dispen);
+                } else {
+                    CRTC_TELETEXT(c, 0, 0);
+                }
+            }
+#ifdef CRTC_FETCH_LOG
+            CRTC_FETCH_LOG(c, t, hc, ma, data);
+#endif
+            ma = (ma + 1) & 0x3fff;
+            CRTC_RUN_RENDER(c, data, dispen, odd, ma13);
+            if (checks) {
+                checks = crtc_chain_step(c, (uint8_t)checks);
+            }
+            i++;
+            if (!r0_hit) {
+                hc++;
+                continue;
+            }
+            if (!plain_ok || r9_hit || c->in_dummy_raster || c->is_vert_adjust_pending ||
+                c->is_end_of_frame_latched || c->is_in_vert_adjust) {
+                eol = 1;
+                break;
+            }
+            // A plain line end (crtc_end_of_line with no row end, vsync,
+            // adjust or frame end; then crtc_line_start_checks(c, 1) with
+            // the row known not to be at R7).
+            hc = 0;
+            bits |= DISPEN_HORIZ;
+            checks |= 1;
+            c->is_first_frame_scanline = 0;
+            if (sc == c->reg[CRTC_R11_CEND]) {
+                c->has_hit_cursor_line_end = 1;
+            }
+            sc = (sc + c->scanline_stride) & c->scanline_mask;
+            ma = c->address_counter_saved;
+            if (c->vert_counter == c->reg[CRTC_R6_VDISP] && (bits & DISPEN_VERT)) {
+                bits &= ~DISPEN_VERT;
+                c->frames++;
+            }
+            if (sc == c->cursor_start_line) {
+                c->has_hit_cursor_line_start = 1;
+            }
+            CRTC_RUN_RA(c, sc | odd_frame, c->is_isv);
+            c->r4_hit = (c->vert_counter == c->reg[CRTC_R4_VTOTAL]);
+            c->r5_hit = (c->vert_adjust_counter == c->reg[CRTC_R5_VADJ]);
+            r9_hit = (sc == (c->reg[CRTC_R9_MAXRA] & c->scanline_mask));
+            c->r9_hit = (uint8_t)r9_hit;   // the chain reads it
+            if (!c->cursor_disabled && c->has_hit_cursor_line_start && !c->has_hit_cursor_line_end) {
+                break;   // cursor activity from here: the outer check stops
+            }
+        }
+        c->horiz_counter = (uint8_t)hc;
+        c->start_of_line_state_checks = (uint8_t)checks;
+        c->display_enable_bits = (uint8_t)bits;
+        c->dispen_shifts[0] = pipe & 1;
+        c->dispen_shifts[1] = (pipe >> 1) & 1;
+        c->dispen_shifts[2] = (pipe >> 2) & 1;
+        c->address_counter = (uint16_t)ma;
+        c->scanline_counter = (uint8_t)sc;
+        c->r9_hit = (uint8_t)r9_hit;
+        c->data_byte = (uint8_t)data;
+        c->data_ma13 = (uint8_t)ma13;
+        if (!eol) {
+            if (i < n && hc != r2 && i > 0) {
+                continue;   // stopped for the cursor: re-check
+            }
+            break;
+        }
+        CRTC_RUN_END(c);
+        crtc_end_of_line(c, (uint8_t)r0, (uint8_t)checks);
+        CRTC_RUN_RELOAD(c);
+        if (c->vsync_changed || i >= n) {
+            break;
+        }
+    }
+    CRTC_RUN_END(c);
+    return i;
+}
+
 // Runs up to n ticks starting at tick index `first`, stopping after a tick
 // that changed the vsync level so the caller can record the IRQ change.
 // Returns the number of ticks run (at least 1 when n > 0).
@@ -561,6 +749,23 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
 #ifdef MACHINE_STATS
         uint64_t p0 = CRTC_CYCLES();
 #endif
+        if (c->reg[CRTC_R0_HTOTAL] < CRTC_SHORT_R0 && c->ula_clock_fast) {
+            uint32_t done = crtc_short_lines(c, first + i, n - i);
+            if (done) {
+                i += done;
+#ifdef MACHINE_STATS
+                c->stat_short += done;
+                c->stat_clk_short += CRTC_CYCLES() - p0;
+#endif
+                if (c->vsync_changed) {
+#ifdef CRTC_VSYNC_LOG
+                    CRTC_VSYNC_LOG(c, first + i);
+#endif
+                    break;
+                }
+                continue;
+            }
+        }
         uint32_t fast = crtc_fast_ticks(c, first + i);
         if (fast > n - i) {
             fast = n - i;
@@ -650,6 +855,9 @@ CRTC_API void crtc_write(struct crtc *c, int addr, uint8_t val)
     if (reg >= CRTC_NUM_REGS) {
         return;
     }
+#ifdef CRTC_WRITE_LOG
+    CRTC_WRITE_LOG(c, reg, val);
+#endif
     uint8_t mask = 0xff;
     switch (reg) {
     case CRTC_R4_VTOTAL: case CRTC_R6_VDISP: case CRTC_R7_VSYNC:
