@@ -80,6 +80,9 @@ void sound_set_volume(int volume)
     s_volume = volume;
     if (s_speaker) {
         esp_codec_dev_set_out_vol(s_speaker, volume < 0 ? 0 : volume > 100 ? 100 : volume);
+        // The ES8311's lowest volume is still audible: 0 mutes (and turns
+        // the amplifier off).
+        esp_codec_dev_set_out_mute(s_speaker, volume <= 0);
     }
 }
 
@@ -258,6 +261,7 @@ esp_err_t sound_init(i2c_master_bus_handle_t i2c, int volume)
     }
     s_volume = volume;
     esp_codec_dev_set_out_vol(s_speaker, volume);
+    esp_codec_dev_set_out_mute(s_speaker, volume <= 0);   // as sound_set_volume
     if (xTaskCreatePinnedToCore(sound_task, "sound", 4096, NULL, 6, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "no memory for the sound task");
     }
