@@ -550,7 +550,9 @@ static MACHINE_NOINLINE uint32_t machine_advance(struct machine *m, uint32_t cyc
 // so the IRQ history already recorded for it holds.
 static MACHINE_NOINLINE void machine_crtc_catch_up(struct machine *m)
 {
-    while (m->crtc_synced != m->synced) {
+    // (A display write can have run the CRTC past the rest: see
+    // machine_cpu_sync_write.)
+    while ((int32_t)(m->synced - m->crtc_synced) > 0) {
         STAT_CLK(m->stat_clk_crtc, m->crtc_synced += crtc_run(&m->crtc, m->crtc_synced, m->synced - m->crtc_synced));
         if (m->crtc.vsync_changed) {
             STAT(m->stat_crtc_deferred_vsync);
@@ -631,7 +633,7 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
     // Conservative when the MA range crosses an addressing boundary.
     {
         const struct crtc *c = &m->crtc;
-        uint32_t chars = due - m->crtc_synced;
+        uint32_t chars = (int32_t)(due - m->crtc_synced) > 0 ? due - m->crtc_synced : 0;
         if (!c->ula_clock_fast) {
             chars = chars / 2 + 1;
         }
@@ -691,7 +693,7 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
     if (skip & 1) {
         with_crtc = 0;
         m->crtc_synced = cyc;   // measurement: no CRTC at all
-    } else if (with_crtc && m->crtc_synced != m->synced) {
+    } else if (with_crtc && (int32_t)(m->synced - m->crtc_synced) > 0) {
         machine_crtc_catch_up(m);
     } else if (!with_crtc) {
         STAT(m->stat_crtc_deferred);
@@ -743,7 +745,13 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
         // The CRTC may cut the chunk short at a vsync change.
         uint32_t done = w;
         if (with_crtc) {
-            STAT_CLK(m->stat_clk_crtc, done = crtc_run(&m->crtc, s, w));
+            // The CRTC from where it is, which a display write may have
+            // taken past s (no vsync change can be there, see
+            // machine_cpu_sync_write).
+            uint32_t ahead = (int32_t)(m->crtc_synced - s) > 0 ? m->crtc_synced - s : 0;
+            if (ahead < w) {
+                STAT_CLK(m->stat_clk_crtc, done = ahead + crtc_run(&m->crtc, s + ahead, w - ahead));
+            }
         }
 
         // VIAs over `done` cycles; the event tick, if this chunk ends on
@@ -774,7 +782,7 @@ static MACHINE_NOINLINE uint32_t machine_advance_ex(struct machine *m, uint32_t 
             }
         }
         m->synced = s + done;
-        if (with_crtc) {
+        if (with_crtc && (int32_t)(m->synced - m->crtc_synced) > 0) {
             m->crtc_synced = m->synced;
         }
         if (fdc_e != 0xffffffffu) {
@@ -1359,18 +1367,25 @@ static MACHINE_NOINLINE void machine_cpu_sync(struct cpu6502 *cpu)
 }
 
 // A write to display RAM the CRTC may fetch (see wr_cycle in cpu6502.c):
-// the machine up to the end of the last storing instruction, or, if it is
-// already past that, the CRTC alone if it was left behind; then the store.
+// the CRTC up to the end of the last storing instruction, then the store.
+// Only the CRTC: before the sync point no vsync change can fall (the
+// scheduler bounds it by the CRTC's own check), so nothing else needs
+// it, and the VIAs follow at the next catch-up, which takes the CRTC from
+// where this left it. Past the sync point (an instruction can overrun
+// it), the whole machine as before.
 static MACHINE_NOINLINE void machine_cpu_sync_write(struct cpu6502 *cpu)
 {
     struct machine *m = cpu->m;
     STAT(m->stat_sync_write);
     uint32_t to = cpu->last_wr;
-    if ((int32_t)(to - m->synced) > 0) {
+    if ((int32_t)(to - m->synced) > 0 && (int32_t)(to - m->sync_due) >= 0) {
         machine_cpu_sync_to(cpu, to);
     } else if ((int32_t)(to - m->crtc_synced) > 0) {
         while (m->crtc_synced != to) {
             m->crtc_synced += crtc_run(&m->crtc, m->crtc_synced, to - m->crtc_synced);
+            if (m->crtc.vsync_changed) {
+                STAT(m->stat_crtc_deferred_vsync);   // must not happen
+            }
         }
     }
 }

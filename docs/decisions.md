@@ -1142,3 +1142,28 @@ demo is a different section at 121-127 (about 94%), next.
 
 Checks: frame cases ARGB and indexed, RVI frames 132-180 M in both
 builds, the disc sweep at 30 and 60 M, both boot traces, Klaus.
+
+## 2026-10-14: display writes catch up the CRTC alone
+
+A store into the display write window (machine_schedule's estimate of
+what the CRTC fetches before the next sync point) made the whole machine
+catch up to the end of the previous storing instruction: VIAs, 1770,
+schedule and the core's sync point, when only the CRTC needed to be
+there for its fetches to see the byte at the right tick. Before the sync
+point no vsync change can fall, because the scheduler bounds the sync
+point by the CRTC's own check, so the CRTC alone now runs up to it and
+the rest follows at the next catch-up, which takes the CRTC from where
+the write left it (crtc_synced may now be ahead of synced: the catch-up
+loop, the advance chunk and the window's character count allow for it;
+a vsync change found on the way would count in the must-be-zero
+stat_crtc_deferred_vsync). A store past the sync point (an instruction
+can overrun it) still syncs everything.
+
+evil-inf from 105 s writes into the displayed area about twice a
+scanline: full catch-ups 8874 -> 514 per million cycles (host bench,
+220-225 M). Board, normal build: 105-120 s 126 -> 121 (234 -> 245 frames
+in 5 s), the RVI part 117 -> 115, 135-160 s 107 -> 100.
+
+Checks: both boot traces, t1poll (10, 31, 77), irqpoll (lda, sta, inc at
+5 and 11), every frame case ARGB and indexed, RVI frames 132-180 M, the
+disc sweep at 30 and 60 M, Klaus.
