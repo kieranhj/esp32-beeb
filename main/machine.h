@@ -104,6 +104,9 @@ struct machine {
     // to a device other than the CRTC, the ULA or paging leaves the CRTC
     // behind when no vsync change can fall in the window (machine.c).
     uint32_t crtc_synced;
+    // The display write window's MA extent past a line start (0: no line
+    // end inside it), for an R12/R13 write to add its start.
+    uint32_t win_extent;
     uint32_t win_due;    // the sync point the display write window was computed for
     uint8_t quiet_ok;    // at the last full schedule: the 1770 and ADC idle (see io_quiet_window)
     uint32_t nmi_cycle;

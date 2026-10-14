@@ -1198,3 +1198,27 @@ ever. Present before today's renderer changes (the earlier build hangs on
 the host at the same point). Now a word none of the run loops takes goes
 through render_word. Frames at 726, 731, 740 and 760 M are identical to
 beebjit; the board runs on to the demo's end screen.
+
+## 2026-10-14: the display write window counts rows, not ticks
+
+machine_schedule's window (the display addresses the CRTC can fetch
+before the next sync point) took MA as climbing one a tick for the whole
+window: up to 4096 characters, which crosses the 16 K boundary and so
+became all of RAM, and every store into RAM was a catch-up. MA climbs at
+most R0 + 1 past a line start, and the start moves on by R1 only at a
+row's last line, at most once in R9 + 1 lines: the extent past a start is
+now (lines / per_row + 2) * R1 + R0 + 2, never more than before. R0, R1
+and R9 writes reschedule; an R12/R13 write keeps the schedule, so it now
+adds its start's range to the window (machine_window_add_start; the core
+takes the window after every I/O access), which also closes a gap the
+all-of-RAM window had been hiding.
+
+evil-inf 720-725 M (host bench): display write syncs 76 K -> 23 K per
+million cycles; the RVI part 2.4 K -> 1.6 K. Board, normal build:
+355-360 s 130 -> 121, 200-225 s 65 -> 56, 135-160 s 100 -> 98.
+
+Checks: frames at 222, 250, 705, 712, 720, 726, 731, 740 and 760 M of
+evil-inf identical to beebjit (the window must stay a superset: a missed
+sync shows as a frame difference), every frame case ARGB and indexed,
+RVI frames in both builds, the disc sweep at 30 and 60 M, both boot
+traces, t1poll (10, 31, 77), irqpoll (lda, sta, inc at 5 and 11), Klaus.

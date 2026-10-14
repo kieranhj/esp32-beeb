@@ -629,8 +629,15 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
     // catches up for writes inside this window. MA climbs within a line,
     // but a line end reloads it with the row's start and a frame start
     // with R12/R13, so past a line end those starts are in too. (A demo
-    // that runs one-line frames fetches the same bytes every line.)
-    // Conservative when the MA range crosses an addressing boundary.
+    // that runs one-line frames fetches the same bytes every line.) Past
+    // a start MA climbs R0 + 1 a line, and the start itself moves on by R1
+    // only at a row's last line, so at most once in R9 + 1 lines: a window
+    // of 4096 ticks is about four rows, not 4096 characters (which crossed
+    // the 16 K boundary and so covered all of RAM: evil-inf from 355 s
+    // drew into the screen with nearly every store a catch-up). R0, R1
+    // and R9 writes reschedule; an R12/R13 write adds its start
+    // (machine_window_add_start). Conservative when the MA range crosses
+    // an addressing boundary.
     {
         const struct crtc *c = &m->crtc;
         uint32_t chars = (int32_t)(due - m->crtc_synced) > 0 ? due - m->crtc_synced : 0;
@@ -638,11 +645,19 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
             chars = chars / 2 + 1;
         }
         uint32_t ma0 = c->address_counter;
-        uint32_t ma1 = ma0 + chars + 1;
         uint32_t hc = c->horiz_counter, r0 = c->reg[CRTC_R0_HTOTAL];
         uint32_t to_eol = (hc <= r0) ? (r0 - hc + 1) : (256 - hc + r0 + 1);
+        uint32_t ma1 = ma0 + (chars < to_eol ? chars : to_eol) + 1;
+        m->win_extent = 0;
         if (chars >= to_eol) {
             uint32_t lines = (chars - to_eol) / (r0 + 1) + 1;   // line ends inside
+            uint32_t per_row = (c->reg[CRTC_R9_MAXRA] & c->scanline_mask) / c->scanline_stride + 1;
+            uint32_t advances = (lines + per_row) / per_row + 1;
+            uint32_t extent = advances * c->reg[CRTC_R1_HDISP] + r0 + 2;
+            if (extent > chars + 1) {
+                extent = chars + 1;
+            }
+            m->win_extent = extent;
             uint32_t starts[2];
             int ns = 0;
             starts[ns++] = c->address_counter_saved;
@@ -655,8 +670,8 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
                 if (starts[i] < ma0) {
                     ma0 = starts[i];
                 }
-                if (starts[i] + chars + 1 > ma1) {
-                    ma1 = starts[i] + chars + 1;
+                if (starts[i] + extent > ma1) {
+                    ma1 = starts[i] + extent;
                 }
             }
         }
@@ -678,6 +693,31 @@ static MACHINE_NOINLINE void machine_schedule(struct machine *m)
     m->stat_clk_due += MACHINE_CYCLES() - due0;
 #endif
 
+}
+
+// An R12/R13 write that kept the schedule: a frame start inside the
+// window would fetch from the new start, so its range joins the window.
+static MACHINE_NOINLINE void machine_window_add_start(struct machine *m)
+{
+    uint32_t e = m->win_extent;
+    if (!e) {
+        return;   // no line end before the sync point
+    }
+    const struct crtc *c = &m->crtc;
+    uint32_t ma0 = ((c->reg[CRTC_R12_MAH] << 8) | c->reg[CRTC_R13_MAL]) & 0x3fff;
+    uint32_t ma1 = ma0 + e;
+    uint32_t lo = machine_display_addr(m, ma0, 0);
+    uint32_t hi = machine_display_addr(m, ma1 & 0x3fff, 7);
+    if (ma1 > 0x3fff || ((ma0 ^ ma1) & 0x3000) || hi < lo) {
+        lo = 0;
+        hi = 0x7fff;
+    }
+    if (lo < m->wlo) {
+        m->wlo = lo;
+    }
+    if (hi > m->whi) {
+        m->whi = hi;
+    }
 }
 
 // `want_due` 0 skips the scheduling at the end (the next sync point and
@@ -1293,6 +1333,9 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         }
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
+        if (keep) {
+            machine_window_add_start(m);   // R12/R13
+        }
         if (IO_LEVEL_MOVED()) {
             m->irq_late = 1;   // R7/R8 can move vsync at once
             machine_schedule(m);
