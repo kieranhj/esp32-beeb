@@ -315,11 +315,12 @@ static void beeb_task(void *arg)
                     }
                 }
                 putchar(10);
-                printf("PROF short lines: calls/M %lu ticks/M %lu, %.0f clk/tick", (unsigned long)(m->crtc.stat_short_calls * 1e6 / d),
-                       (unsigned long)(m->crtc.stat_short * 1e6 / d),
+                printf("PROF short lines: calls/M %lu ticks/M %lu (block %lu in %lu calls), %.0f clk/tick",
+                       (unsigned long)(m->crtc.stat_short_calls * 1e6 / d), (unsigned long)(m->crtc.stat_short * 1e6 / d),
+                       (unsigned long)(m->crtc.stat_block * 1e6 / d), (unsigned long)(m->crtc.stat_block_calls * 1e6 / d),
                        m->crtc.stat_short ? (double)m->crtc.stat_clk_short / m->crtc.stat_short : 0.0);
                 putchar(10);
-                m->crtc.stat_short = m->crtc.stat_short_calls = 0;
+                m->crtc.stat_short = m->crtc.stat_short_calls = m->crtc.stat_block = m->crtc.stat_block_calls = 0;
                 m->crtc.stat_clk_short = 0;
             }
             m->stat_clk_advance = m->stat_clk_crtc = m->stat_clk_via = m->stat_clk_fdc = m->stat_clk_io = 0;

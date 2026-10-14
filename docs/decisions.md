@@ -1112,3 +1112,33 @@ only limit (about 44 frames a second).
 
 Checks: every frame case ARGB and indexed, RVI frames at 132-180 M in
 both builds, the disc sweep at 30 and 60 M, the boot traces, Klaus.
+
+## 2026-10-14: RVI on core 1: whole two-character lines in a leaf (134 -> 117)
+
+The board's disassembly of crtc_short_lines showed why three rewrites of
+its loop measured no better: about 20 live values against the LX7's 14
+usable registers (windowed ABI: a call anywhere in the function leaves
+fewer still), so most of every tick was stack loads and stores, whatever
+the C looked like. crtc_short_block is a separate leaf for RVI's steady
+state, R0 = 1: it checks once that nothing but plain lines can happen
+(the start-of-line chain has nothing latched, R1 and R2 past the line,
+the cursor off, the row at neither R6 nor R7, the fetch linear for both
+characters), then writes three stream words a line (two ticks and the
+row address event) up to the line end that reaches R9. What the lines
+change is worked out from the count afterwards: the cursor line flags
+(by modular distance), the chain bits (5 after two lines), the hsync
+count down, the DISPEN history (the same every line from the second
+whole line: 5 * cur, then 2 * cur). It starts or stops on either tick
+of a line, since the palette writes catch the CRTC up mid-section (2.7
+calls a scanline). crtc_run tries it first when R0 is 1;
+crtc_short_lines hands over to it after a plain line end.
+
+Board, RVI part (65-100 s), profile build: short-line ticks 201 -> 119
+clocks each (83% of them through the block; a call is about 200 clocks
+of checks, 350 of loop for four lines and 86 of write-back), 144 -> 128.
+Normal build: 134 -> 117, 250 frames in 5 s (full speed), core 0 88%.
+The quiet part and bs-twisted's numbers are unchanged. 100-125 s of the
+demo is a different section at 121-127 (about 94%), next.
+
+Checks: frame cases ARGB and indexed, RVI frames 132-180 M in both
+builds, the disc sweep at 30 and 60 M, both boot traces, Klaus.

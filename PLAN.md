@@ -35,7 +35,8 @@ core 0 load), from the STATS line:
 | bs-twisted | 65-117 (the twister 105, the ending 117) | 56-88% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
-| evil-inf (RVI, from 65 s) | 134 (was 242) | 77% (was 98%) |
+| evil-inf (RVI, 65-100 s) | 117 (was 242) | 88% |
+| evil-inf (100-125 s) | 121-127 | 71% |
 
 Every disc in `discs/` except the NuLA ones (out of scope) is pixel
 identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
@@ -190,21 +191,15 @@ frame cases for the rest of `discs/`.
       one, its video only catching up after the store. Matching it means
       leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
       clocks on the drawing effects). See decisions.
-- [ ] evil-inf's RVI part (from about 65 s): 242 -> 134 clocks per cycle
-      on core 1, which is the limit (about 44 frames a second, so 88%
-      speed; core 0 77% busy). Each scanline writes R0=1 at h 0
-      and R0=95 32 ticks later (sixteen two-character lines step the
-      raster), then R9, R12, R13 and three or four palette entries. Done
-      (decisions, "RVI"): the vsync bound counts rows to R7; short lines
-      (R0 < 8) through their own loop, hsync included; CRTC register
-      writes through the quiet window and scheduled once; on core 0,
-      the renderer's run loops go on through DISPEN changes and row
-      address and framing events (core 0 98% -> 77%). Next on core 1 (profile build,
-      clocks per cycle): short-line ticks 42 (200 a tick; three
-      restructurings of that loop measured no better, nor did a queue of
-      timed palette events, see decisions), fast runs 20, scheduling 9
-      (R0 and R9 writes). On core 0, if needed again: palette events,
-      which end a span each (two a scanline inside the picture).
+- [ ] evil-inf from about 100 s to 125 s: 121-127 clocks per cycle,
+      about 94% speed (it catches up after). The RVI part before it
+      (65-100 s) is at full speed now: 242 -> 117 on core 1, core 0 88%
+      (decisions, "RVI"). Profile that section first. Left in the RVI
+      part, if a later demo needs it: crtc_short_block's calls cost about
+      200 clocks of checks and 86 of write-back around a loop of about 85
+      a line, and there are 2.7 a scanline because the palette writes
+      catch the CRTC up mid-section; short lines it does not take go
+      through crtc_short_lines at about 200 a tick.
 - [ ] t1poll diverges from beebjit at latches 3, 150 and 200 (instruction
       11568 or 11722, an interrupt taken differently); 10, 31 and 77 are
       identical. Already so before 2026-10-13's RVI work (checked at

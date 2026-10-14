@@ -601,6 +601,163 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
 #define CRTC_RUN_HSYNC(c, width) CRTC_HSYNC(c, width)
 #endif
 
+// Plain two-character lines (R0 = 1): RVI's steady state. Each line is a
+// tick with the row's first byte, one with its second and the row address
+// event of a plain line end; nothing else can happen in them when, as
+// checked first, the start-of-line chain has nothing latched, R1 and R2
+// are past the line, the cursor is off and the row is at neither R6 nor
+// R7. From either tick of a line (palette writes catch the CRTC up
+// mid-line, so runs start and end there): the rest of that line, whole
+// lines up to the line end that reaches R9 (the next end is a row end),
+// and a first tick of the next if the run ends there. The rest is worked
+// out from the counts: the cursor line flags, the chain bits, the hsync
+// count down and the DISPEN history (the same every line from the second
+// whole line). crtc_short_lines' loop keeps most of its state on the
+// stack on the LX7 (14 usable registers for about 20 values); this leaf
+// keeps a dozen. Returns the ticks run; 0 if it could not start here.
+static CRTC_API __attribute__((noinline)) uint32_t crtc_short_block(struct crtc *c, uint32_t tick, uint32_t n)
+{
+    uint32_t sc0 = c->scanline_counter;
+    uint32_t saved = c->address_counter_saved;
+    uint32_t bits = c->display_enable_bits;
+    uint32_t hc = c->horiz_counter;
+    if (n == 0 || hc > 1 || c->reg[CRTC_R0_HTOTAL] != 1 || c->scanline_stride != 1 ||
+        c->reg[CRTC_R1_HDISP] <= 1 || (c->hsync_width > 0 && c->reg[CRTC_R2_HSYNC] <= 1) ||
+        c->r9_hit || !c->cursor_disabled || c->cursor_skew_counter >= 0 || !(bits & DISPEN_HORIZ) ||
+        c->in_vsync || c->is_even_vsync || c->in_dummy_raster || c->is_vert_adjust_pending ||
+        c->is_end_of_frame_latched || c->is_in_vert_adjust || c->is_end_of_main_latched ||
+        c->is_end_of_vert_adjust_latched || c->vert_counter == c->reg[CRTC_R7_VSYNC] ||
+        (c->vert_counter == c->reg[CRTC_R6_VDISP] && (bits & DISPEN_VERT)) ||
+        c->address_counter != ((saved + hc) & 0x3fff) || ((saved | (saved + 1)) & 0x2000)) {
+        return 0;
+    }
+    const uint8_t *p0;
+    uint32_t pstride, chars;
+    CRTC_FETCH_RUN(c, (uint16_t)saved, 0, tick, &p0, &pstride, &chars);
+    if (chars < 2) {
+        return 0;
+    }
+    const uint8_t *p1 = p0 + pstride;
+    uint32_t r9m = c->reg[CRTC_R9_MAXRA] & 0x1f;
+    uint32_t to_r9 = ((r9m - sc0 - 1) & 0x1f) + 1;   // line ends up to the one reaching R9
+    // The run: lead (the line's second tick), whole lines, trail (a first tick).
+    uint32_t lead = hc, ends, lines, trail;
+    lines = (n - lead) / 2;
+    if (lead + lines > to_r9) {
+        lines = to_r9 - lead;
+    }
+    ends = lead + lines;
+    trail = (ends < to_r9 && n - lead - 2 * lines > 0) ? 1 : 0;
+    uint32_t ticks = lead + 2 * lines + trail;
+    uint32_t isv = c->is_isv, oddf = isv ? c->is_odd_frame : 0;
+    uint32_t cur = (bits == DISPEN_ALL);
+    uint32_t skew = c->skew_dispen_index;
+    uint32_t checks = c->start_of_line_state_checks;
+    // The DISPEN history, newest in bit 0. A line's first tick shifts in
+    // cur, its second (the R0 hit) 0; every whole line after the first
+    // sees 5 * cur and 2 * cur and leaves 2 * cur.
+    uint32_t pipe = (c->dispen_shifts[0] ? 1 : 0) | (c->dispen_shifts[1] ? 2 : 0) | (c->dispen_shifts[2] ? 4 : 0);
+    uint32_t sc = sc0, data = c->data_byte, odd = tick & 1, t = tick;
+    CRTC_RUN_BEGIN(c);
+#ifdef CRTC_FETCH_LOG
+#define BLOCK_LOG(k) CRTC_FETCH_LOG(c, t, k, (saved + (k)) & 0x3fff, data)
+#else
+#define BLOCK_LOG(k) ((void)0)
+#endif
+    if (lead) {
+        pipe = (pipe << 1) & 7;
+        data = p1[(sc | oddf) & 7];
+        BLOCK_LOG(1);
+        CRTC_RUN_RENDER(c, data, (pipe >> skew) & 1, odd, 0);
+        sc = (sc + 1) & 0x1f;
+        CRTC_RUN_RA(c, sc | oddf, isv);
+        checks = ((checks << 1) & 0xe) | 1;
+        odd ^= 1;
+        t++;
+    }
+    if (lines) {
+        // The first whole line from the history as it is, the rest steady.
+        uint32_t f = (sc | oddf) & 7;
+        pipe = ((pipe << 1) | cur) & 7;
+        data = p0[f];
+        BLOCK_LOG(0);
+        CRTC_RUN_RENDER(c, data, (pipe >> skew) & 1, odd, 0);
+        pipe = (pipe << 1) & 7;
+        t++;
+        data = p1[f];
+        BLOCK_LOG(1);
+        CRTC_RUN_RENDER(c, data, (pipe >> skew) & 1, odd ^ 1, 0);
+        t++;
+        sc = (sc + 1) & 0x1f;
+        CRTC_RUN_RA(c, sc | oddf, isv);
+        checks = ((checks << 2) & 0xc) | 1;
+        uint32_t b0 = ((5 * cur) >> skew) & 1, b1 = ((2 * cur) >> skew) & 1;
+        for (uint32_t j = 1; j < lines; j++) {
+            f = (sc | oddf) & 7;
+            data = p0[f];
+            BLOCK_LOG(0);
+            CRTC_RUN_RENDER(c, data, b0, odd, 0);
+            t++;
+            data = p1[f];
+            BLOCK_LOG(1);
+            CRTC_RUN_RENDER(c, data, b1, odd ^ 1, 0);
+            t++;
+            sc = (sc + 1) & 0x1f;
+            CRTC_RUN_RA(c, sc | oddf, isv);
+        }
+        if (lines > 1) {
+            pipe = cur << 1;
+            checks = 5;
+        }
+    }
+    if (trail) {
+        pipe = ((pipe << 1) | cur) & 7;
+        data = p0[(sc | oddf) & 7];
+        BLOCK_LOG(0);
+        CRTC_RUN_RENDER(c, data, (pipe >> skew) & 1, odd, 0);
+        checks = (checks << 1) & 0xe;
+    }
+#undef BLOCK_LOG
+    CRTC_RUN_END(c);
+    c->dispen_shifts[0] = pipe & 1;
+    c->dispen_shifts[1] = (pipe >> 1) & 1;
+    c->dispen_shifts[2] = (pipe >> 2) & 1;
+    c->start_of_line_state_checks = (uint8_t)checks;
+    if (c->in_hsync) {
+        if (c->hsync_tick_counter > ticks) {
+            c->hsync_tick_counter = (uint8_t)(c->hsync_tick_counter - ticks);
+        } else {
+            c->hsync_tick_counter = 0;
+            c->in_hsync = 0;
+        }
+    }
+    if (ends) {
+        // The ends saw scanlines sc0 .. sc0 + ends - 1 before the step and
+        // one more after it.
+        uint32_t r11 = c->reg[CRTC_R11_CEND], csl = c->cursor_start_line;
+        if (r11 <= 0x1f && ((r11 - sc0) & 0x1f) < ends) {
+            c->has_hit_cursor_line_end = 1;
+        }
+        if (csl <= 0x1f && ((csl - sc0 - 1) & 0x1f) < ends) {
+            c->has_hit_cursor_line_start = 1;
+        }
+        c->scanline_counter = (uint8_t)sc;
+        c->is_first_frame_scanline = 0;
+        c->r4_hit = (c->vert_counter == c->reg[CRTC_R4_VTOTAL]);
+        c->r5_hit = (c->vert_adjust_counter == c->reg[CRTC_R5_VADJ]);
+        c->r9_hit = (uint8_t)(sc == r9m);
+    }
+    c->horiz_counter = (uint8_t)trail;
+    c->address_counter = (uint16_t)((saved + trail) & 0x3fff);
+    c->data_byte = (uint8_t)data;
+    c->data_ma13 = 0;
+#ifdef MACHINE_STATS
+    c->stat_block += ticks;
+    c->stat_block_calls++;
+#endif
+    return ticks;
+}
+
 // Very short lines at 2 MHz (RVI runs two-character lines for a quarter of
 // each scanline): every tick is within a few of an R0 hit, so the fast
 // path's runs are one tick long and each costs a plan. This steps up to n
@@ -616,8 +773,24 @@ CRTC_INLINE void crtc_fast(struct crtc *c, uint32_t tick, uint32_t n)
 static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc *c, uint32_t tick, uint32_t n)
 {
     uint32_t i = 0;
+    int yield = 0, block_failed = 0;
     CRTC_RUN_BEGIN(c);
     for (;;) {
+        if (yield) {
+            // A line start the block may take (see the plain line end).
+            yield = 0;
+            CRTC_RUN_END(c);
+            uint32_t done = crtc_short_block(c, tick + i, n - i);
+            CRTC_RUN_RELOAD(c);
+            if (done) {
+                i += done;
+                if (i >= n) {
+                    break;
+                }
+            } else {
+                block_failed = 1;   // not again in this call
+            }
+        }
         // State only a line end changes.
         if (c->cursor_skew_counter >= 0 || c->vert_counter == c->reg[CRTC_R7_VSYNC] ||
             c->is_even_vsync || c->reg[CRTC_R0_HTOTAL] == 0 ||
@@ -717,6 +890,11 @@ static CRTC_API __attribute__((noinline)) uint32_t crtc_short_lines(struct crtc 
             if (!c->cursor_disabled && c->has_hit_cursor_line_start && !c->has_hit_cursor_line_end) {
                 break;   // cursor activity from here: the outer check stops
             }
+            if (r0 == 1 && !r9_hit && !block_failed && n - i >= 2 && c->cursor_disabled &&
+                !c->is_end_of_main_latched && !c->is_end_of_vert_adjust_latched) {
+                yield = 1;   // whole plain lines next, perhaps: the block
+                break;
+            }
         }
         c->horiz_counter = (uint8_t)hc;
         c->start_of_line_state_checks = (uint8_t)checks;
@@ -763,7 +941,13 @@ CRTC_INLINE uint32_t crtc_run(struct crtc *c, uint32_t first, uint32_t n)
         uint64_t p0 = CRTC_CYCLES();
 #endif
         if (c->reg[CRTC_R0_HTOTAL] < CRTC_SHORT_R0 && c->ula_clock_fast) {
-            uint32_t done = crtc_short_lines(c, first + i, n - i);
+            uint32_t done = 0;
+            if (c->reg[CRTC_R0_HTOTAL] == 1) {
+                done = crtc_short_block(c, first + i, n - i);
+            }
+            if (!done) {
+                done = crtc_short_lines(c, first + i, n - i);
+            }
             if (done) {
                 i += done;
 #ifdef MACHINE_STATS

@@ -40,6 +40,8 @@ static void reset_stats(struct machine *m)
 {
     m->stat_calls = m->stat_chunks = 0;
     m->crtc.stat_fast = m->crtc.stat_slow = 0;
+    m->crtc.stat_short = m->crtc.stat_short_calls = m->crtc.stat_block = m->crtc.stat_block_calls = 0;
+    m->crtc.stat_clk_short = 0;
     m->crtc.stat_clk_fast = m->crtc.stat_clk_slow = m->crtc.stat_clk_plan = 0;
     m->crtc.stat_runs = 0;
     memset(m->crtc.stat_slow_why, 0, sizeof m->crtc.stat_slow_why);
@@ -110,6 +112,9 @@ int main(int argc, char **argv)
     printf("per 1M cycles: fast runs %.0f (avg %.1f ticks), io ticks %.0f, zero-length calls %.0f\n",
            m->crtc.stat_runs * 1e6 / ran, m->crtc.stat_runs ? (double)m->crtc.stat_fast / m->crtc.stat_runs : 0.0,
            m->stat_io_ticks * 1e6 / ran, m->stat_zero_calls * 1e6 / ran);
+    printf("short lines per 1M cycles: calls %.0f, ticks %.0f (block %.0f in %.0f calls), %.1f clk/tick\n",
+           m->crtc.stat_short_calls * 1e6 / ran, m->crtc.stat_short * 1e6 / ran, m->crtc.stat_block * 1e6 / ran, m->crtc.stat_block_calls * 1e6 / ran,
+           m->crtc.stat_short ? (double)m->crtc.stat_clk_short / m->crtc.stat_short : 0.0);
     printf("exact ticks per 1M by cause: line-start %.0f hsync %.0f cursor-skew %.0f dispen-pipe %.0f counter-hit %.0f other %.0f\n",
            m->crtc.stat_slow_why[0] * 1e6 / ran, m->crtc.stat_slow_why[1] * 1e6 / ran, m->crtc.stat_slow_why[2] * 1e6 / ran,
            m->crtc.stat_slow_why[3] * 1e6 / ran, m->crtc.stat_slow_why[4] * 1e6 / ran, m->crtc.stat_slow_why[5] * 1e6 / ran);
