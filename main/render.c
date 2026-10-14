@@ -658,6 +658,19 @@ static inline RENDER_FN int run_event(struct render *r, uint16_t w)
 // normal use.
 volatile int render_bench_skip;
 
+// A word through render_word, counted as the slow path.
+static RENDER_FN void consume_slow(struct render *r, uint16_t w)
+{
+    r->stat_slow_words++;
+    uint32_t c0 = RENDER_CYCLES();
+    render_word(r, w);
+    uint32_t dc = RENDER_CYCLES() - c0;
+    r->stat_clk_slow += dc;
+    int ty = (w & VS_EVENT) ? (w & 15) : 0;
+    r->stat_ev_n[ty]++;
+    r->stat_ev_clk[ty] += dc;
+}
+
 RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
 {
     uint32_t t = vs->tail;
@@ -675,16 +688,7 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
             t++;
             n--;
             vs->tail = t;
-            r->stat_slow_words++;
-            uint32_t c0 = RENDER_CYCLES();
-            render_word(r, w);
-            uint32_t dc = RENDER_CYCLES() - c0;
-            r->stat_clk_slow += dc;
-            {
-                int ty = (w & VS_EVENT) ? (w & 15) : 0;
-                r->stat_ev_n[ty]++;
-                r->stat_ev_clk[ty] += dc;
-            }
+            consume_slow(r, w);
             continue;
         }
         const int dispen = (w & VS_DISPEN) != 0;
@@ -762,11 +766,21 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                 r->is_dispen = d;
                 select_func(r);
             }
+            if (t == t0) {
+                // A pair the loop leaves (its first tick on the window
+                // start or the forced hsync): two ticks in render_word.
+                t++;
+                n--;
+                vs->tail = t;
+                consume_slow(r, w);
+                continue;
+            }
             r->stat_fast_words += t - t0;
             vs->tail = t;
             continue;
         }
         prepare_tables(r);
+        const uint32_t t_in = t;
         const int blank = r->selected_blank;
         const int fast2 = r->is_clock_2mhz;
         const int want2 = r->line2_wanted;
@@ -995,6 +1009,18 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
             }
             w = vs->ring[t & (VS_RING - 1)];
         } while (!(w & VS_EVENT) && (w & (VS_DISPEN | VS_MA13)) == run_flags);
+        if (t == t_in) {
+            // A word none of the loops takes: a pair at the right edge
+            // (half of it fits) or one the renderer, still at 2 MHz, must
+            // split. render_word does it as two ticks. (Before this the
+            // loop came back to the same word for ever: evil-inf at 362 s,
+            // a MODE 5 pair at render_pos 760.)
+            t++;
+            n--;
+            vs->tail = t;
+            consume_slow(r, w);
+            continue;
+        }
         r->stat_fast_words += (uint32_t)(pos - pos0) / 8;
         r->render_pos = pos;
         r->span_end = (uint32_t)pos;

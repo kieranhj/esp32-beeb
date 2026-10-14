@@ -1184,3 +1184,17 @@ frames).
 Checks: both boot traces (which page ROMs throughout), t1poll (10, 31,
 77), irqpoll (lda, sta, inc at 5 and 11), every frame case ARGB and
 indexed, RVI frames 132-180 M, the disc sweep at 30 and 60 M, Klaus.
+
+## 2026-10-14: a renderer hang at the right edge (evil-inf at 362 s)
+
+The board's machine stopped at 362 s into evil-inf: it waits for room in
+the stream ring, and core 0 had stopped consuming. A diagnostic showed
+the renderer on a MODE 5 pair word (both ticks of a 1 MHz character) at
+render_pos 760, eight pixels from the line's end. The in-window loops
+leave such a pair ("the slow path does it as two ticks"), and so does the
+outside-window loop for a pair landing on the window start or the forced
+hsync, but nothing sent it there: the loop came back to the same word for
+ever. Present before today's renderer changes (the earlier build hangs on
+the host at the same point). Now a word none of the run loops takes goes
+through render_word. Frames at 726, 731, 740 and 760 M are identical to
+beebjit; the board runs on to the demo's end screen.
