@@ -1222,3 +1222,26 @@ evil-inf identical to beebjit (the window must stay a superset: a missed
 sync shows as a frame difference), every frame case ARGB and indexed,
 RVI frames in both builds, the disc sweep at 30 and 60 M, both boot
 traces, t1poll (10, 31, 77), irqpoll (lda, sta, inc at 5 and 11), Klaus.
+
+## 2026-10-14: paging reads through the quiet window, and paging writes that change nothing
+
+evil-inf from 355 s runs a loop of `TSB &FE34` / `TRB &FE34` (with A
+chosen so ACCCON keeps its value, 08) and four `STA &FE21` a scanline.
+A paging read went through the general path: a full catch-up to the
+access and a one-tick advance, two machine calls, one of them of zero
+length. Paging reads involve no device, so with nothing falling due
+before the tick they now take the quiet window (VIAs by subtraction, the
+CRTC left behind), as the general path counts it. Paging writes catch
+the CRTC up only when they change its fetch (paging_moves_fetch: ACCCON
+D, or with D set ACCCON Y or ROMSEL bit 7, as machine_display_run reads
+them).
+
+Host bench, 720-725 M, per million cycles: machine calls 42 K -> 761,
+zero-length calls 10 K -> 1, CRTC runs 85.7 K -> 54.9 K (11.4 -> 17.8
+ticks each). Board, normal build, all 370 s: every sample 250 frames;
+355-360 s 121 -> 81, 105-120 s 111 -> 104-107.
+
+Checks: both boot traces, t1poll (10, 31, 77), irqpoll (lda, sta, inc
+at 5 and 11), every frame case ARGB and indexed, RVI frames 132-180 M,
+evil-inf frames at 222, 250, 705, 712, 720, 726, 731, 740 and 760 M,
+Klaus.

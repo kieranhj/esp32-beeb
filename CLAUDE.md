@@ -111,7 +111,7 @@ for where an instruction polls the IRQ line around a 1 MHz access. A
 sweep of every disc against beebjit (`python tools/discsweep.py <cycles,...>`, frametest's
 `run_disc_test` per disc and cycle) finds what the frame cases miss; a
 frame that differs by a lot is usually a CPU drift, found by comparing
-trace windows on absolute ticks (tracediff compares deltas only). `TRACE_FROM=<cycle>` limits
+trace windows on absolute ticks (tracediff compares deltas only). `TRACE_DUMP="lo hi"` prints the CPU's view of memory at the end (a demo's loop in sideways RAM). `TRACE_FROM=<cycle>` limits
 our trace to a window. `tools/frametest.py` drives both emulators through the
 keyboard matrix; its cases are the regression set for video changes. Build
 it a second time with `-DRENDER_INDEXED` (the board's pixel type) as

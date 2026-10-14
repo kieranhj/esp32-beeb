@@ -153,6 +153,20 @@ int main(int argc, char **argv)
     while (m->cpu.cycles < cycles) {
         machine_run(m, m->cpu.cycles + 100000);
     }
+    if (getenv("TRACE_DUMP")) {
+        // TRACE_DUMP="lo hi": the CPU's view of lo..hi at the end, as hex.
+        unsigned lo = 0, hi = 0;
+        sscanf(getenv("TRACE_DUMP"), "%x %x", &lo, &hi);
+        for (unsigned a = lo; a <= hi; a++) {
+            const uint8_t *p = m->rd_tab[0][a >> 8];
+            if ((a - lo) % 16 == 0) {
+                if (a != lo) fputc(10, stderr);
+                fprintf(stderr, "%04X:", a);
+            }
+            fprintf(stderr, p ? " %02X" : " --", p ? p[a & 0xff] : 0);
+        }
+        fputc(10, stderr);
+    }
     fprintf(stderr, "ran %llu cycles, pc=%04x\n",
             (unsigned long long)m->cpu.cycles, m->cpu.pc);
     return 0;

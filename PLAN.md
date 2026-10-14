@@ -36,8 +36,9 @@ core 0 load), from the STATS line:
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
 | evil-inf (RVI, 65-100 s) | 115 (was 242) | 88% |
-| evil-inf (105-120 s) | 111 (was 126) | 77% |
-| evil-inf (355-360 s) | 121 (was 130) | 72% |
+| evil-inf (105-120 s) | 104-107 (was 126) | 77% |
+| evil-inf (305-350 s) | 111-114 | 76% |
+| evil-inf (355-360 s) | 81 (was 130) | 69% |
 
 Every disc in `discs/` except the NuLA ones (out of scope) is pixel
 identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
@@ -192,16 +193,13 @@ frame cases for the rest of `discs/`.
       one, its video only catching up after the store. Matching it means
       leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
       clocks on the drawing effects). See decisions.
-- [ ] evil-inf: full speed in every 5 s sample of its 365 s but two,
-      355-360 s at 121 clocks per cycle (243-246 frames, caught up at
-      once after). That section has no short lines: about 31 K paging and
-      21 K video ULA writes and 23 K display write syncs per million
-      cycles (host bench, 720-725 M). The RVI part is 242 -> 115 on core
-      1, core 0 88% (decisions, "RVI" and after). Left in the RVI part, if
-      a later demo needs it: crtc_short_block's calls cost about 200
-      clocks of checks and 86 of write-back around a loop of about 85 a
-      line, and there are 2.7 a scanline because the palette writes catch
-      the CRTC up mid-section; short lines it does not take go through
+- [ ] evil-inf is at full speed in every 5 s sample of its 370 s (250
+      frames each); the tightest are the RVI part (65-95 s, 114-116 of
+      120) and 305-350 s (111-114). Left in the RVI part, if a later demo
+      needs it: crtc_short_block's calls cost about 200 clocks of checks
+      and 86 of write-back around a loop of about 85 a line, and there
+      are 2.7 a scanline because the palette writes catch the CRTC up
+      mid-section; short lines it does not take go through
       crtc_short_lines at about 200 a tick.
 - [ ] t1poll diverges from beebjit at latches 3, 150 and 200 (instruction
       11568 or 11722, an interrupt taken differently); 10, 31 and 77 are

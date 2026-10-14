@@ -1229,6 +1229,18 @@ INLINE int io_write_keeps_schedule(const struct machine *m, uint16_t addr)
     return 0;
 }
 
+// Whether a paging write (FE30-FE37) changes what the CRTC fetches (see
+// machine_display_run): the display's RAM (ACCCON D), and with D set the
+// overlays of HAZEL (ACCCON Y) and ANDY (ROMSEL bit 7).
+INLINE int paging_moves_fetch(const struct machine *m, uint16_t addr, uint8_t val)
+{
+    if (addr & 4) {
+        uint8_t d = val ^ m->acccon;
+        return (d & 1) || ((d & 0x08) && (val & 1));
+    }
+    return ((val ^ m->romsel) & 0x80) && (m->acccon & 1);
+}
+
 static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t addr, uint32_t cyc)
 {
     STAT(m->stat_sync_io);
@@ -1262,6 +1274,16 @@ static MACHINE_NOINLINE uint32_t machine_io_rd_slow(struct machine *m, uint16_t 
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));  // at the odd count, mid 1 MHz cycle
         IO_AFTER_TICK();
+    } else if ((addr & 0xfff8) == 0xfe30 && io_quiet_window(m, cyc + 1, &mask, &n)) {
+        // Paging, read: no device is involved, so with nothing falling due
+        // before the tick the VIAs by subtraction and the CRTC left behind,
+        // as the general path below counts it. (evil-inf from 355 s reads
+        // ACCCON twice a line, TSB and TRB, each two general catch-ups.)
+        cyc++;
+        k++;
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], v = sheila_read(m, addr));
+        IO_AFTER_ACCESS();
     } else {
         IO_SYNC();
         IO_TICK();
@@ -1380,7 +1402,12 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         // subtraction and the CRTC run up to it (paging changes what the
         // CRTC fetches from ANDY and HAZEL); the schedule stands, as it
         // does below. (evil-inf pages about once a scanline from 105 s.)
-        machine_crtc_catch_up(m);
+        // Only a write that changes the CRTC's fetch catches it up: ACCCON's
+        // D, or with D set its Y (HAZEL) or ROMSEL's ANDY bit. evil-inf
+        // from 355 s rewrites ACCCON with the value it holds twice a line.
+        if (paging_moves_fetch(m, addr, val)) {
+            machine_crtc_catch_up(m);
+        }
         cyc++;
         k++;
         STAT(m->stat_io_page[(addr >> 4) & 7]);
