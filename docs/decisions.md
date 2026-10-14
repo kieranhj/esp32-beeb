@@ -1167,3 +1167,20 @@ in 5 s), the RVI part 117 -> 115, 135-160 s 107 -> 100.
 Checks: both boot traces, t1poll (10, 31, 77), irqpoll (lda, sta, inc at
 5 and 11), every frame case ARGB and indexed, RVI frames 132-180 M, the
 disc sweep at 30 and 60 M, Klaus.
+
+## 2026-10-14: paging writes through the quiet window
+
+ROMSEL and ACCCON writes (FE30-FE37) took the general path: a full
+catch-up to the access, then a one-tick advance with a schedule, then
+the write. As for the CRTC's registers, when nothing falls due before
+the tick (the quiet window) the VIAs advance by subtraction and the CRTC
+runs up to it (paging changes its view of ANDY and HAZEL); the schedule
+stands, as the general path also left it. evil-inf pages about once a
+scanline from 105 s: machine catch-ups 13.7 K -> 0.7 K per million
+cycles (host bench, 220-225 M). Board, normal build: 105-120 s 121 ->
+111, and every 5 s sample of the first 240 s is at full speed (250
+frames).
+
+Checks: both boot traces (which page ROMs throughout), t1poll (10, 31,
+77), irqpoll (lda, sta, inc at 5 and 11), every frame case ARGB and
+indexed, RVI frames 132-180 M, the disc sweep at 30 and 60 M, Klaus.

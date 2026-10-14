@@ -1331,6 +1331,18 @@ static MACHINE_NOINLINE uint32_t machine_io_wr_slow(struct machine *m, uint16_t 
         STAT(m->stat_io_page[(addr >> 4) & 7]);
         STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));  // video ULA: access then tick
         IO_AFTER_TICK_KEEP(keep);
+    } else if ((addr & 0xfff8) == 0xfe30 && io_quiet_window(m, cyc + 1, &mask, &n)) {
+        // Paging (ROMSEL, ACCCON), as the general path below: the tick,
+        // then the write. With nothing falling due before it, the VIAs by
+        // subtraction and the CRTC run up to it (paging changes what the
+        // CRTC fetches from ANDY and HAZEL); the schedule stands, as it
+        // does below. (evil-inf pages about once a scanline from 105 s.)
+        machine_crtc_catch_up(m);
+        cyc++;
+        k++;
+        STAT(m->stat_io_page[(addr >> 4) & 7]);
+        STAT_CLK(m->stat_clk_sheila[(addr >> 4) & 7], sheila_write(m, addr, val));
+        IO_AFTER_ACCESS();
     } else {
         IO_SYNC();
         IO_TICK();
