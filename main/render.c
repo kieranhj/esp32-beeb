@@ -631,6 +631,25 @@ void render_flush(struct render *r)
     end_span(r);
 }
 
+// A row address or framing event, taken by the run loops in passing (RVI
+// has one every two ticks): as render_word, less the select_func, which
+// the caller does. 0 for any other word.
+static inline RENDER_FN int run_event(struct render *r, uint16_t w)
+{
+    uint32_t ty = w & 0xff;
+    if (ty == VS_RA) {
+        uint8_t payload = (uint8_t)(w >> 8);
+        teletext_ra_isv_changed(&r->teletext, payload & 0x1f, (payload & 0x80) != 0);
+        r->row_address = payload & 0x1f;
+    } else if (ty == VS_FRAMING) {
+        r->framing_changed = 1;
+    } else {
+        return 0;
+    }
+    r->stat_events++;
+    return 1;
+}
+
 // The per-word path above costs a few hundred clocks on the board; most
 // words are plain bitmap ticks inside the window with nothing changing,
 // which this loop renders with everything hoisted. It gives exactly what
@@ -645,6 +664,13 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
     const int all_slow = render_bench_skip;   // bit 0 (or 2): everything down the slow path; 3, 4: see the mode 7 loop
     while (n > 0) {
         uint16_t w = vs->ring[t & (VS_RING - 1)];
+        if ((w & VS_EVENT) && !(all_slow & 5) && run_event(r, w)) {
+            select_func(r);
+            t++;
+            n--;
+            vs->tail = t;
+            continue;
+        }
         if ((w & VS_EVENT) || r->needs_mode_recalc || r->cursor_segment_index != -1 || (all_slow & 5)) {
             t++;
             n--;
@@ -675,6 +701,12 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
             // Outside the window: the beam advances and the teletext
             // pipeline runs, nothing is drawn. Same as render_tick's other
             // branches, for a run of ticks.
+            // With the pipeline idle (MA13 clear) DISPEN changes nothing
+            // here, so the run goes on through them and through row
+            // address and framing events (RVI's short lines start outside
+            // the window).
+            const int tt_idle = !(TT_RUN(ma13, tt->idle_calls));
+            int d = dispen;
             uint32_t t0 = t;
             for (;;) {
                 int32_t step = 8;
@@ -687,6 +719,7 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                     }
                     step = 16;
                 }
+                d = (w & VS_DISPEN) != 0;
                 if (!(w & VS_ODD) && (TT_RUN(ma13, tt->idle_calls))) {
                     teletext_data(tt, ma13 ? (uint8_t)(w >> 8) : 0, ma13 ? dispen : 0, TT_DECODE(mode7));
                 }
@@ -708,10 +741,26 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
                     break;
                 }
                 w = vs->ring[t & (VS_RING - 1)];
-                if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) {
+                if (tt_idle) {
+                    while ((w & VS_EVENT) && run_event(r, w)) {
+                        t++;
+                        if (--n <= 0) {
+                            break;
+                        }
+                        w = vs->ring[t & (VS_RING - 1)];
+                    }
+                    if (n <= 0 || (w & (VS_EVENT | VS_MA13))) {
+                        r->horiz_beam_pos = horiz;
+                        break;
+                    }
+                } else if ((w & VS_EVENT) || (w & (VS_DISPEN | VS_MA13)) != run_flags) {
                     r->horiz_beam_pos = horiz;
                     break;
                 }
+            }
+            if (r->is_dispen != d || tt_idle) {
+                r->is_dispen = d;
+                select_func(r);
             }
             r->stat_fast_words += t - t0;
             vs->tail = t;
@@ -798,6 +847,44 @@ RENDER_FN void render_consume_n(struct render *r, struct vstream *vs, int n)
             }
 #undef RUN_2MHZ
 #undef RUN_1MHZ
+        }
+        if (!mode7 && fast2 && !(TT_RUN(ma13, tt->idle_calls)) && n > 0 && pos <= RENDER_WIDTH - 8 &&
+            ((w & VS_EVENT) || !(w & (VS_PAIR | VS_MA13)))) {
+            // 2 MHz bitmap ticks whose DISPEN changes, with row address and
+            // framing events between them (RVI: two-character lines, each
+            // a row address event, a tick with DISPEN and one without).
+            // The teletext pipeline is idle (MA13 clear), so DISPEN and
+            // the row address only choose between the table and black.
+            int d = r->is_dispen;
+            uint32_t rab = r->row_address & 8;
+            for (;;) {
+                if (w & VS_EVENT) {
+                    if (!run_event(r, w)) {
+                        break;
+                    }
+                    rab = r->row_address & 8;
+                } else {
+                    if (w & (VS_PAIR | VS_MA13)) {
+                        break;
+                    }
+                    d = (w & VS_DISPEN) != 0;
+                    const render_px *v = (d && !rab) ? t2[w >> 8] : black;
+                    PX_COPY8(line + pos, v);
+                    if (want2) {
+                        PX_COPY8(line2 + pos, v);
+                    }
+                    pos += 8;
+                    horiz += 8;
+                }
+                t++;
+                n--;
+                if (n <= 0 || pos > RENDER_WIDTH - 8) {
+                    break;
+                }
+                w = vs->ring[t & (VS_RING - 1)];
+            }
+            r->is_dispen = d;
+            select_func(r);
         }
         if (mode7 && !blank && pos == pos0) {
             // Teletext characters, one pair word each. In bulk through the

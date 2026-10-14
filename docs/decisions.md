@@ -1082,3 +1082,32 @@ Checks: RVI frames at 132-180 M identical to beebjit, the boot traces,
 t1poll (10, 31, 77) and irqpoll (lda, sta, inc at two latches), every
 frame case (ARGB and indexed), the disc sweep at 30 and 60 M, Klaus.
 t1poll at latches 3, 150 and 200 diverges, as it did before this work.
+
+## 2026-10-14: RVI on core 0: the run loops take DISPEN changes and RA events
+
+Core 0 was 98% busy in the RVI part. Each two-character line is a row
+address event, a tick with DISPEN and one without, so every bitmap run
+was one tick long: the run loops ended on any event or flag change, and
+each event went through render_word (89 board clocks for a row address
+event, 16 a scanline). Now, with the teletext pipeline idle (MA13
+clear, so DISPEN only chooses between the table and black):
+
+- after the steady 2 MHz run, a mixed loop renders ticks whatever their
+  DISPEN, and takes row address and framing events in passing
+  (run_event: render_word's work less the select_func, done once at the
+  end);
+- the outside-window loop does the same (RVI's short lines start left of
+  the window);
+- a row address or framing event at the top of the loop is handled there,
+  not by render_word.
+
+host/benchs.exe replays a captured stream (frame.exe's FRAME_DUMP_TICKS)
+through the indexed renderer: five RVI frames at 139 M, 5.71 -> 3.05 M
+TSC; words through the slow path 42 K -> 9.4 K (hsync, palette and skip
+remain). host/frame.exe now hands row address and framing events to
+render_consume_n inside its runs, as the board's render task does, so the
+frame cases cover these paths. Board numbers to come (the board was not
+attached).
+
+Checks: every frame case ARGB and indexed, RVI frames at 132-180 M in
+both builds, the disc sweep at 30 and 60 M, the boot traces, Klaus.

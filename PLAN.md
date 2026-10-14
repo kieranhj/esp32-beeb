@@ -197,15 +197,15 @@ frame cases for the rest of `discs/`.
       raster), then R9, R12, R13 and three or four palette entries. Done
       (decisions, "RVI"): the vsync bound counts rows to R7; short lines
       (R0 < 8) through their own loop, hsync included; CRTC register
-      writes through the quiet window and scheduled once. Next on core 1
-      (profile build, clocks per cycle): short-line ticks 42 (200 a tick;
-      three restructurings of that loop measured no better, see
-      decisions), fast runs 20, scheduling 9 (R0 and R9 writes), the
-      palette writes' catch-ups (a queue of timed palette events the
-      CRTC inserts as it runs would save the catch-up and the run split).
-      On core 0: palette events end a span each (about 4 a scanline),
-      row address events 16 a scanline at 89 clocks (9% of core 0),
-      framing events from every R0-R9 write.
+      writes through the quiet window and scheduled once; on core 0,
+      the renderer's run loops go on through DISPEN changes and row
+      address and framing events (host bench: 47% less render time;
+      not yet measured on the board). Next on core 1 (profile build,
+      clocks per cycle): short-line ticks 42 (200 a tick; three
+      restructurings of that loop measured no better, nor did a queue of
+      timed palette events, see decisions), fast runs 20, scheduling 9
+      (R0 and R9 writes). On core 0: measure first; then palette events,
+      which end a span each (two a scanline inside the picture).
 - [ ] t1poll diverges from beebjit at latches 3, 150 and 200 (instruction
       11568 or 11722, an interrupt taken differently); 10, 31 and 77 are
       identical. Already so before 2026-10-13's RVI work (checked at

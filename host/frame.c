@@ -129,14 +129,20 @@ static void consume(struct render *r, struct vstream *vs)
         }
         if (!(w & VS_EVENT)) {
             // A run of ticks goes through the renderer's fast path, as on
-            // the board, so the frame tests cover it.
+            // the board, so the frame tests cover it; with the row address
+            // and framing events inside it, which the fast path takes too.
             int n = 0;
-            while (n < vs_available(vs) && !(vs->ring[(vs->tail + n) & (VS_RING - 1)] & VS_EVENT)) {
+            while (n < vs_available(vs)) {
                 uint16_t tw = vs->ring[(vs->tail + n) & (VS_RING - 1)];
+                if ((tw & VS_EVENT) && (tw & 0xff) != VS_RA && (tw & 0xff) != VS_FRAMING) {
+                    break;
+                }
                 if (stream_ticks >= dump_lo && stream_ticks < dump_hi) {
                     fprintf(stderr, "t%llu %04x" "\n", stream_ticks, tw);
                 }
-                stream_ticks += (tw & VS_PAIR) ? 2 : 1;   // ticks, so it counts cycles
+                if (!(tw & VS_EVENT)) {
+                    stream_ticks += (tw & VS_PAIR) ? 2 : 1;   // ticks, so it counts cycles
+                }
                 n++;
             }
             render_consume_n(r, vs, n);
@@ -344,6 +350,15 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < 8; i++) {
             unsigned k = (field_count + 1 + i) & 7;
             fprintf(stderr, "field -%u: hsyncs=%u beam at vsync raise=%d,%d\n", 7 - i, field_hsyncs[k], field_horiz[k], field_vert[k]);
+        }
+    }
+    if (getenv("FRAME_RSTATS")) {
+        fprintf(stderr, "render: %lu fast words, %lu slow words\n", (unsigned long)render.stat_fast_words,
+                (unsigned long)render.stat_slow_words);
+        for (int i = 0; i < 16; i++) {
+            if (render.stat_ev_n[i]) {
+                fprintf(stderr, "  slow type %d: %lu\n", i, (unsigned long)render.stat_ev_n[i]);
+            }
         }
     }
     fprintf(stderr, "ran %llu cycles, %lu frames, pc=%04x, beam %ld,%ld\n",
