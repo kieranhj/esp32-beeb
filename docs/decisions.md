@@ -1106,8 +1106,9 @@ through the indexed renderer: five RVI frames at 139 M, 5.71 -> 3.05 M
 TSC; words through the slow path 42 K -> 9.4 K (hsync, palette and skip
 remain). host/frame.exe now hands row address and framing events to
 render_consume_n inside its runs, as the board's render task does, so the
-frame cases cover these paths. Board numbers to come (the board was not
-attached).
+frame cases cover these paths. On the board, RVI part: core 0 98% ->
+77% busy (446 ns a stream word); core 1 is unchanged at 134 and now the
+only limit (about 44 frames a second).
 
 Checks: every frame case ARGB and indexed, RVI frames at 132-180 M in
 both builds, the disc sweep at 30 and 60 M, the boot traces, Klaus.

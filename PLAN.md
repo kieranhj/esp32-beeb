@@ -35,7 +35,7 @@ core 0 load), from the STATS line:
 | bs-twisted | 65-117 (the twister 105, the ending 117) | 56-88% |
 | bs-sotc, bs-mott (VIA pollers) | 77-82 | 58% |
 | bs-patarty | 79-93 | 63% |
-| evil-inf (RVI, from 65 s) | 134 (was 242) | 98% |
+| evil-inf (RVI, from 65 s) | 134 (was 242) | 77% (was 98%) |
 
 Every disc in `discs/` except the NuLA ones (out of scope) is pixel
 identical to beebjit at 15, 30, 45, 60, 90 and 120 M cycles from boot.
@@ -191,20 +191,19 @@ frame cases for the rest of `discs/`.
       leaving the CRTC behind at every VIA sync (the lazy CRTC, 1-4
       clocks on the drawing effects). See decisions.
 - [ ] evil-inf's RVI part (from about 65 s): 242 -> 134 clocks per cycle
-      on core 1, and core 0 is now the limit too (98% busy at about 42
-      frames a second, so 85% speed). Each scanline writes R0=1 at h 0
+      on core 1, which is the limit (about 44 frames a second, so 88%
+      speed; core 0 77% busy). Each scanline writes R0=1 at h 0
       and R0=95 32 ticks later (sixteen two-character lines step the
       raster), then R9, R12, R13 and three or four palette entries. Done
       (decisions, "RVI"): the vsync bound counts rows to R7; short lines
       (R0 < 8) through their own loop, hsync included; CRTC register
       writes through the quiet window and scheduled once; on core 0,
       the renderer's run loops go on through DISPEN changes and row
-      address and framing events (host bench: 47% less render time;
-      not yet measured on the board). Next on core 1 (profile build,
+      address and framing events (core 0 98% -> 77%). Next on core 1 (profile build,
       clocks per cycle): short-line ticks 42 (200 a tick; three
       restructurings of that loop measured no better, nor did a queue of
       timed palette events, see decisions), fast runs 20, scheduling 9
-      (R0 and R9 writes). On core 0: measure first; then palette events,
+      (R0 and R9 writes). On core 0, if needed again: palette events,
       which end a span each (two a scanline inside the picture).
 - [ ] t1poll diverges from beebjit at latches 3, 150 and 200 (instruction
       11568 or 11722, an interrupt taken differently); 10, 31 and 77 are
