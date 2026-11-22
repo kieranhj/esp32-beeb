@@ -6,7 +6,7 @@
 # stops at 23f0, both decimal tests stop at 024e with zp0b=00.
 set -e
 cd "$(dirname "$0")/.."
-TESTS="../rg40xxv/b2-libretro/etc/6502_65C02_functional_tests"
+TESTS="../../../misc/rg40xxv/b2-libretro/etc/6502_65C02_functional_tests"   # D:\misc\rg40xxv since the 2026-11 move
 zig cc -O2 -std=c11 -Wall -Wextra -o host/cputest.exe host/cputest.c main/cpu6502.c
 host/cputest.exe "$TESTS/6502.bin"  0   0400 nmos trap | grep -E "pc=3448 " || { echo "FAIL: 6502 functional (nmos)"; exit 1; }
 host/cputest.exe "$TESTS/6502.bin"  0   0400 cmos trap | grep -E "pc=3448 " || { echo "FAIL: 6502 functional (cmos)"; exit 1; }

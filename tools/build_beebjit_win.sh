@@ -18,7 +18,7 @@
 # reference; beebjit has one such label, hence stub.c.
 set -e
 cd "$(dirname "$0")/.."
-SRC=../rg40xxv/beebjit
+SRC=../../../misc/rg40xxv/beebjit   # D:\misc\rg40xxv since the 2026-11 Dev Drive move
 OUT=out/beebjit-win
 PATCHED=out/beebjit-src
 mkdir -p "$OUT" "$PATCHED"

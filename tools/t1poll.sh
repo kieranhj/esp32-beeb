@@ -7,7 +7,7 @@
 #   sh tools/t1poll.sh [trace exe] [T1 latch low byte, hex] [diff lines]
 # The NOP first: beebjit executes the opcode it had already fetched after
 # "e pc=", so the first instruction at the new PC is skipped there.
-cd /c/Users/khcon/OneDrive/Projects/esp32-beeb
+cd "$(dirname "$0")/.."
 EXE=${1:-host/trace.exe}
 LO=${2:-0D}
 AT=2000000

@@ -7,7 +7,7 @@
 # no-disc boot in both emulators and traced for 200 K cycles; run it for a
 # few latch values, all must be identical.
 #   sh tools/irqpoll.sh [trace exe] [T1 latch low byte, hex] [diff lines] [lda|ldy|ldiy|sta|inc]
-cd /c/Users/khcon/OneDrive/Projects/esp32-beeb
+cd "$(dirname "$0")/.."
 EXE=${1:-host/trace.exe}
 LO=${2:-0D}
 AT=2000000
