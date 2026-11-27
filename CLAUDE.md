@@ -30,7 +30,7 @@ knowledge; explain ESP32 specifics, not 6502 or 6845 ones.
 ## Environment
 
 - Windows 11, PowerShell. ESP-IDF v5.5.5 installed by Espressif's `eim` at
-  `C:\esp\v5.5.5\esp-idf`, tools in `C:\Espressif`. Activate per shell:
+  `D:\tools\esp\v5.5.5\esp-idf`, tools in `C:\Espressif`. Activate per shell:
 
   ```powershell
   . C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1
